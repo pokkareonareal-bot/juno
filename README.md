@@ -1,4 +1,4 @@
-# Juno Core
+# Juno
 
 **Decides whether you're talking to it. No wake word.**
 
