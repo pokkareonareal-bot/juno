@@ -1,0 +1,120 @@
+# Copy this file to config.yaml and edit it. config.yaml is gitignored, so
+# your settings (and, if you enrol your voice, your threshold) never get
+# committed.
+#
+# Every value below is the default this project ships with -- the numbers in
+# REPORT.txt / README.md were measured against these.
+
+app:
+  assistant_name: "Juno"          # the name it listens for -- "Juno, ..." settles
+                                   # an ambiguous utterance instantly (see README)
+
+# --- audio in ---------------------------------------------------------------
+audio:
+  sample_rate: 16000
+  channels: 1
+  frame_ms: 32                    # frame size fed to voice activity detection
+  preroll: 0.4                    # seconds of audio kept before speech is detected,
+                                   # so the first word isn't clipped
+  backend: sounddevice            # sounddevice | portaudio  (vpio is macOS-only and
+                                   # needs an extra build step -- see README, "advanced")
+  input_device: null               # substring match, e.g. "AirPods" -- null uses the
+                                   # system default
+
+  # Optional: keep a local, on-disk copy of segments (audio + what the gate
+  # and intent engine decided about each one) to eventually train the
+  # learned gate on your own data. OFF by default, and it should stay off
+  # until you've read audio/retention.py's docstring and mean to turn it on.
+  retain_segments: false
+  retain_dir: data/segments
+  retain_max_mb: 500
+
+# --- voice activity detection -------------------------------------------------
+vad:
+  backend: silero                  # silero (ONNX model, recommended) | energy (no
+                                    # model, adaptive RMS threshold, no extra download)
+  threshold: 0.5                   # speech-probability threshold
+  min_speech_ms: 200                # onset debounce
+  min_silence_ms: 550                # how long a pause has to be before a segment
+                                      # closes -- the single biggest responsiveness knob
+  min_segment_ms: 350
+  max_segment_ms: 20000
+
+# --- whose voice was that (optional, off until you run `python enroll.py`) --
+own_voice:
+  enabled: false                   # enroll.py switches this on
+  threshold: 0.55                  # cosine-similarity line -- enroll.py measures and
+                                    # writes the real one for your voice + microphone
+  calibrated_for: ""                 # which microphone the threshold above is valid
+                                      # for; a mismatch disables the check rather than
+                                      # guess wrong
+  profile: data/voice_profile.json
+  model: null                       # path to the WeSpeaker ECAPA-TDNN ONNX model;
+                                     # null downloads it on first use
+
+# --- speech-to-text: pick ONE and fill in the matching section below --------
+# See README.md, "Choosing a speech-to-text engine", for the tradeoffs.
+stt:
+  provider: faster_whisper          # faster_whisper (local, offline, free) |
+                                     # openai_whisper (cloud, needs OPENAI_API_KEY)
+  # faster_whisper settings:
+  model: small.en                   # tiny.en | base.en | small.en | medium.en -- bigger
+                                     # is more accurate and slower; small.en is a fair
+                                     # default on a laptop CPU
+  device: cpu                       # cpu | cuda
+  compute_type: int8
+
+# --- deciding whether it's being spoken to -----------------------------------
+# These are the addressee-detection thresholds themselves. The defaults are
+# the ones measured in REPORT.txt section 4.3 (94.3% accuracy, 0% false
+# activations on the bundled 87-case eval). Change them if your false-accept
+# vs. false-reject tradeoff should sit somewhere else.
+intent:
+  accept_threshold: 0.60            # confidence at or above this -> answered
+  reject_threshold: 0.34            # confidence below this -> ignored outright
+                                     # (between the two: the ambiguity band, see below)
+  llm_adjudicator: true             # consult llm.provider for a second opinion on
+                                     # utterances in the ambiguity band (about 1 in 5)
+  llm_adjudicator_timeout: 3.0
+  followup_window: 20.0             # seconds after it last spoke where a reply is
+                                     # likely addressed to it
+  bystander_names: []               # named people who aren't you, e.g. ["Alex"] --
+                                     # pushes down utterances that address them instead
+
+  # The pre-transcription gate: decides whether a segment is even worth
+  # running speech-to-text on, BEFORE paying for it. See README's numbers
+  # section and REPORT.txt 2.7. Ships in "shadow" -- it scores and logs every
+  # segment but never actually skips one, so you can watch it agree with the
+  # intent engine before trusting it. Flip to "skip" once you have.
+  gate:
+    mode: shadow                    # off | shadow | skip
+    skip_below: 0.25
+    cold_after: 20.0
+    very_cold_after: 60.0
+    long_seconds: 10.0
+    short_seconds: 1.2
+    low_confidence: 0.90
+
+# --- the language model (BYOK: bring your own key) ---------------------------
+# Used two places: (1) the intent adjudicator above, for the ~20% of
+# utterances the fast heuristic alone finds genuinely ambiguous, and (2)
+# answering, once an utterance is accepted -- unless you've wired in your own
+# agent (see examples/connect_an_agent.py), in which case this is just the
+# adjudicator's model.
+llm:
+  provider: echo                    # echo (no key, repeats the question back -- so
+                                     # `python run.py` works before you've configured
+                                     # anything) | openai | anthropic | gemini | ollama
+  model: null                       # null uses each provider's documented default --
+                                     # see README.md, "Bringing your own model", for
+                                     # what that is and how to override it
+
+# --- speaking the answer out loud (optional) ---------------------------------
+# Leave provider unset (or delete this section) and answers just print to the
+# terminal -- no TTS ships with this package. See README.md, "Hearing it talk
+# back", for both options below and how to add your own.
+tts:
+  provider: null                    # say (macOS, free, zero setup) | openai (needs
+                                     # OPENAI_API_KEY) | null (print only)
+  voice: null                       # say: a macOS voice name, e.g. "Samantha"
+                                     # openai: alloy | echo | fable | onyx | nova | shimmer

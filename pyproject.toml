@@ -1,0 +1,27 @@
+[project]
+name = "juno-core"
+version = "0.1.0"
+description = "Wake-word-free addressee detection for a voice assistant: decides whether an utterance was meant for it, not what to do about it. BYOK, BYO speech-to-text, BYO agent."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "onnxruntime>=1.16",
+    "sounddevice>=0.4",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Local, offline speech-to-text (recommended default -- see README).
+faster-whisper = ["faster-whisper>=1.0"]
+# Anything that talks to a cloud API over plain HTTPS (OpenAI Whisper/TTS,
+# any adapter you write against a REST endpoint) needs this.
+http = ["requests>=2.31"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["juno_core*"]
