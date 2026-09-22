@@ -377,9 +377,9 @@ to disk. The gate's log records scores, named signals and (with
 samples. Don't add a recorder to get training data. Use one of the sources
 below.
 
-**Training data has to be open-source compatible.** Juno is open source under
-a permissive licence (see [LICENSE](LICENSE)), and a model trained here may ship with it, so the tooling enforces where rows
-come from:
+**Training data has to be open-source compatible.** Juno is open source
+under a permissive licence (see [LICENSE](LICENSE)), and a model trained
+here may ship with it, so the tooling enforces where rows come from:
 
 | source | licence | notes |
 | --- | --- | --- |
