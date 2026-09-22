@@ -1,6 +1,8 @@
 """Teaching the pre-transcription gate, offline, from data it may learn from.
 
     python -m juno_core.intelligence.gate_training sources
+    python -m juno_core.intelligence.gate_training collect  --out s1.csv --speakers p1,p2 \
+                                                            --room kitchen --consent release
     python -m juno_core.intelligence.gate_training features --manifest m.csv --out rows.csv
     python -m juno_core.intelligence.gate_training train    --rows rows.csv --out model.json
     python -m juno_core.intelligence.gate_training evaluate --rows unseen.csv --model model.json
@@ -15,7 +17,9 @@ that, and that is enforced, not suggested:
   - public corpora with open licences (``sources`` lists the registered ones
     -- AMI is CC BY 4.0, Common Voice CC0, Speech Commands CC BY 4.0);
   - ``custom`` sources, only with an explicit open licence in the manifest;
-  - ``consented`` recordings, only with a ``consent`` column: ``release``
+  - ``consented`` recordings -- from ``collect`` (a guided live session that
+    keeps only feature rows; see gate_collect.py) or from a manifest of
+    clips -- only with a consent scope: ``release``
     (the participants agreed to derived models and feature tables being
     published) or ``internal`` (evaluation only -- a model trained on it is
     marked non-distributable, and only with --allow-internal).
@@ -71,8 +75,9 @@ META = ("label", "source", "license", "consent", "speaker", "session", "room",
         "mic", "feature_ms", "intent_verdict")
 GROUP_KEYS = ("speaker", "session", "room", "mic")
 
-# Licences a model can be trained on and still be published under MIT with
-# attribution. Deliberately short: no NC (commercial use is allowed by MIT),
+# Licences a model can be trained on and still be published with a
+# permissively licensed project, with attribution. Deliberately short: no NC
+# (the project's licence allows commercial use),
 # no SA (whether weights are a "derivative" is unsettled -- not worth the risk).
 OPEN_LICENSES = frozenset({
     "CC0-1.0", "CC-BY-4.0", "CC-BY-3.0", "PDDL-1.0", "ODC-By-1.0",
@@ -402,10 +407,7 @@ def group_split(rows: Sequence[dict], fractions: Sequence[float] = (0.6, 0.2, 0.
 
     first_seen: dict[tuple[str, str], int] = {}
     for i, row in enumerate(rows):
-        for key in keys:
-            value = row.get(key, "")
-            if not value:
-                continue
+        for key, value in _key_values(row, keys):
             j = first_seen.setdefault((key, value), i)
             parent[find(i)] = find(j)
 
@@ -430,14 +432,24 @@ def group_split(rows: Sequence[dict], fractions: Sequence[float] = (0.6, 0.2, 0.
     return assignment
 
 
+def _key_values(row: dict, keys: Sequence[str]):
+    """(key, value) pairs a row belongs to. A conversation's speaker is
+    written "p1+p2" and belongs to both p1 and p2."""
+    for key in keys:
+        value = row.get(key, "")
+        parts = value.split("+") if key == "speaker" else [value]
+        for part in parts:
+            if part:
+                yield key, part
+
+
 def check_disjoint(rows: Sequence[dict], assignment: Sequence[int],
                    keys: Sequence[str]) -> list[str]:
     """Key values that appear in more than one split (should be none)."""
     seen: dict[tuple[str, str], set] = defaultdict(set)
     for row, split in zip(rows, assignment):
-        for key in keys:
-            if row.get(key):
-                seen[(key, row[key])].add(split)
+        for pair in _key_values(row, keys):
+            seen[pair].add(split)
     return [f"{k}={v}" for (k, v), s in seen.items() if len(s) > 1]
 
 
@@ -721,6 +733,12 @@ def _cmd_sources(args) -> int:
     return 0
 
 
+def _cmd_collect(args) -> int:
+    from juno_core.intelligence.gate_collect import collect_main
+
+    return collect_main(args)
+
+
 def _cmd_features(args) -> int:
     manifest_path = Path(args.manifest)
     with open(manifest_path, newline="", encoding="utf-8") as handle:
@@ -835,6 +853,20 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     sub.add_parser("sources", help="list registered datasets and their licences")
 
+    c = sub.add_parser("collect", help="guided, consented live session -> feature rows "
+                                       "(no audio is saved)")
+    c.add_argument("--out", required=True)
+    c.add_argument("--speakers", required=True,
+                   help="comma-separated pseudonyms of everyone speaking, e.g. p1,p2")
+    c.add_argument("--room", required=True, help="e.g. kitchen, office")
+    c.add_argument("--consent", required=True, choices=("release", "internal"))
+    c.add_argument("--session", help="default: session-YYYYMMDD-HHMM")
+    c.add_argument("--mic", help="default: the current input device's name")
+    c.add_argument("--config", help="config.yaml for audio/vad/own_voice settings")
+    c.add_argument("--scale", type=float, default=1.0,
+                   help="multiply every prompt's duration (0.5 = a half-length session)")
+    c.add_argument("--append", action="store_true", help="add to an existing --out file")
+
     f = sub.add_parser("features", help="manifest of labelled clips -> feature rows")
     f.add_argument("--manifest", required=True,
                    help="CSV: path,label,source[,license,consent,speaker,session,room,mic,"
@@ -876,8 +908,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     s.add_argument("--export", help="write unlabelled feature rows (needs log_features)")
 
     args = parser.parse_args(argv)
-    return {"sources": _cmd_sources, "features": _cmd_features, "train": _cmd_train,
-            "evaluate": _cmd_evaluate, "shadow": _cmd_shadow}[args.cmd](args)
+    return {"sources": _cmd_sources, "collect": _cmd_collect, "features": _cmd_features,
+            "train": _cmd_train, "evaluate": _cmd_evaluate,
+            "shadow": _cmd_shadow}[args.cmd](args)
 
 
 if __name__ == "__main__":

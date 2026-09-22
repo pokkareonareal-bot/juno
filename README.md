@@ -377,8 +377,8 @@ to disk. The gate's log records scores, named signals and (with
 samples. Don't add a recorder to get training data. Use one of the sources
 below.
 
-**Training data has to be open-source compatible.** Juno is MIT-licensed, and
-a model trained here may ship with it, so the tooling enforces where rows
+**Training data has to be open-source compatible.** Juno is open source under
+a permissive licence (see [LICENSE](LICENSE)), and a model trained here may ship with it, so the tooling enforces where rows
 come from:
 
 | source | licence | notes |
@@ -393,9 +393,10 @@ The tooling refuses non-commercial (NC) and share-alike (SA) licences,
 unlicensed audio (podcasts, YouTube, etc.) and audio from ordinary Juno use.
 None of the public sets really covers speech *to an assistant*, so you'll
 need a small **consented** set: people alternating between requests to Juno,
-talking to each other, and background chatter, in real rooms. Only mark it
-`consent=release` if participants agreed in writing that derived models and
-feature tables may be published. Otherwise mark it `internal`: you can
+talking to each other, and background chatter, in real rooms. The `collect`
+command runs that session for you (below). Only mark it `consent=release` if
+participants agreed in writing that derived models and feature tables may be
+published. Otherwise mark it `internal`: you can
 evaluate on it, but a model trained on it (`--allow-internal`) is marked
 non-distributable. Use pseudonymous speaker IDs. The trained model file
 lists every source, its licence and its attribution. Keep that list if you
@@ -404,6 +405,8 @@ Confirm them on each dataset's page when you download it.
 
 ```bash
 python -m juno_core.intelligence.gate_training sources            # registry
+python -m juno_core.intelligence.gate_training collect \
+    --out data/gate/s1.csv --speakers p1,p2 --room kitchen --consent release
 python -m juno_core.intelligence.gate_training features \
     --manifest manifest.csv --out rows.csv [--delete-source]        # clips -> numbers
 python -m juno_core.intelligence.gate_training train \
@@ -412,6 +415,18 @@ python -m juno_core.intelligence.gate_training evaluate --rows unseen.csv --mode
 python -m juno_core.intelligence.gate_training shadow --log logs/juno.jsonl
 ```
 
+- `collect` runs a guided live session of about 10 minutes for two people.
+  It prompts everyone in turn to ask Juno something, give it commands, talk
+  to each other (including asking each other questions, the hardest cases),
+  and stay quiet while media plays, near the microphone and from across the
+  room. Each segment goes through your configured microphone, VAD,
+  voiceprint and feature extraction, exactly as at runtime. The label comes
+  from the prompt, only the feature row is written, and it asks everyone to
+  confirm consent before starting. Context columns are recorded as a cold
+  start, because a staged session can't produce honest conversational
+  timing. So the model learns from the *sound*, and context stays with the
+  rules. Aim for a few sessions: different people, rooms and microphones.
+  `train` keeps each session within one split.
 - `features` reads 16 kHz integer-PCM WAVs listed in a manifest (`path`,
   `label`, `source`, plus optional `speaker`, `session`, `room`, `mic`,
   `start`/`end` and conversational context such as `since_ai` and
@@ -468,6 +483,7 @@ juno_core/
     features.py          acoustic features (pitch, voicing, spectral shape)
     gate.py               pre-transcription "worth listening to?" check
     gate_training.py      offline: build feature tables, train/evaluate the gate
+    gate_collect.py       guided, consented recording session (keeps numbers only)
     intent.py              the addressee-detection engine itself
     followups.py           "say that again" / "tell me more", detected cheaply
     executor.py             the narrow interface for handing off long-running work

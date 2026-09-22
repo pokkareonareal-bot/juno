@@ -414,3 +414,96 @@ class Training(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeMic:
+    """Frames of synthetic speech bursts and room noise, stamped like the
+    real capture's, starting at the collector's clock."""
+
+    def __init__(self, clock, frame=512, rate=16000):
+        self.clock, self.frame, self.rate = clock, frame, rate
+        self.started = self.stopped = False
+        rng = np.random.default_rng(7)
+        quiet = (0.002 * rng.standard_normal(rate)).astype(np.float32)
+        self.loop = np.concatenate([quiet, synthetic_voice(1.5), quiet, quiet,
+                                    synthetic_voice(2.0, f0=200, seed=3), quiet])
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+    def frames(self):
+        from juno_core.audio.capture import AudioFrame
+
+        t0 = self.clock()
+        i = 0
+        while True:
+            lo = (i * self.frame) % (self.loop.size - self.frame)
+            yield AudioFrame(samples=self.loop[lo:lo + self.frame],
+                             timestamp=t0 + i * self.frame / self.rate, adc_time=0.0, index=i)
+            i += 1
+
+
+class Collect(unittest.TestCase):
+    def make(self, speakers, answers=None):
+        from juno_core.intelligence.gate_collect import Collector
+
+        said = []
+        answers = list(answers or [])
+        mic = FakeMic(lambda: 100.0)
+        collector = Collector(
+            {"vad": {"backend": "energy"}}, speakers=speakers, session="s1", room="kitchen",
+            mic="fake", consent="release", capture=mic,
+            ask=lambda prompt: answers.pop(0) if answers else "", say=said.append,
+            clock=lambda: 100.0)
+        return collector, mic, said
+
+    def test_session_keeps_labelled_numbers_only(self):
+        from juno_core.intelligence.gate_collect import DEFAULT_SCRIPT
+
+        with tempfile.TemporaryDirectory() as tmp:
+            collector, mic, said = self.make(["p1", "p2"], answers=["yes"])
+            self.assertTrue(collector.confirm_consent())
+            rows = collector.run(DEFAULT_SCRIPT, scale=0.2)
+            self.assertTrue(mic.started and mic.stopped)
+            labels = {r["label"] for r in rows}
+            self.assertEqual(labels, {"assistant_directed", "human_directed",
+                                      "background_or_media"})
+            speakers = {r["speaker"] for r in rows}
+            self.assertTrue({"p1", "p2", "p1+p2", "media"} <= speakers)
+            for r in rows:
+                self.assertEqual((r["source"], r["consent"], r["session"]),
+                                 ("consented", "release", "s1"))
+                self.assertAlmostEqual(r["since_ai_log"], math.log1p(3600.0), places=5)  # neutral
+                self.assertGreater(r["duration"], 0.3)
+            T.write_rows(Path(tmp) / "s1.csv", rows)
+            self.assertEqual([p.name for p in Path(tmp).iterdir()], ["s1.csv"])
+            self.assertTrue(all(T.trainable(r) for r in T.read_rows([Path(tmp) / "s1.csv"])))
+
+    def test_consent_required(self):
+        from juno_core.intelligence.gate_collect import Collector
+
+        collector, _, _ = self.make(["p1"], answers=["no"])
+        self.assertFalse(collector.confirm_consent())
+        with self.assertRaises(ValueError):
+            Collector(None, speakers=["p1"], session="s", room="r", mic="m",
+                      consent="maybe", capture=FakeMic(time.monotonic))
+
+    def test_solo_uses_phone_call_prompt(self):
+        collector, _, _ = self.make(["p1"])
+        texts = [text for prompt, _, text in collector._steps(
+            __import__("juno_core.intelligence.gate_collect", fromlist=["x"]).DEFAULT_SCRIPT)
+            if prompt.label == "human_directed"]
+        self.assertTrue(all("phone call" in t for t in texts))
+
+    def test_conversation_speakers_link_in_split(self):
+        rows = [dict(r) for r in synthetic_rows(60)]
+        for r in rows:
+            r["session"] = ""
+        rows[0]["speaker"], rows[1]["speaker"] = "a+b", "b"
+        rows[2]["speaker"] = "a"
+        assignment = T.group_split(rows, (0.6, 0.2, 0.2), ("speaker",))
+        self.assertEqual(len({assignment[0], assignment[1], assignment[2]}), 1)
+        self.assertEqual(T.check_disjoint(rows, assignment, ("speaker",)), [])
