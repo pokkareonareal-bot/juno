@@ -424,7 +424,7 @@ python -m juno_core.intelligence.gate_training features \
 python -m juno_core.intelligence.gate_training train \
     --rows rows.csv --out juno_core/data/models/gate_model.json --max-false-skip 0.01
 python -m juno_core.intelligence.gate_training evaluate --rows unseen.csv --model gate_model.json
-python -m juno_core.intelligence.gate_training shadow --log logs/juno.jsonl
+python -m juno_core.intelligence.gate_training shadow --log logs/events.jsonl
 ```
 
 - `collect` runs a guided live session of about 10 minutes for two people.
