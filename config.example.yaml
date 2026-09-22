@@ -23,8 +23,9 @@ audio:
 
 # --- voice activity detection -------------------------------------------------
 vad:
-  backend: silero                  # silero (ONNX model, recommended) | energy (no
-                                    # model, adaptive RMS threshold, no extra download)
+  backend: silero                  # silero (2 MB ONNX model, recommended, downloaded
+                                    # on first use) | energy (no model, adaptive RMS
+                                    # threshold, noticeably worse in noise)
   threshold: 0.5                   # speech-probability threshold
   min_speech_ms: 200                # onset debounce
   min_silence_ms: 550                # how long a pause has to be before a segment
@@ -42,7 +43,8 @@ own_voice:
                                       # guess wrong
   profile: data/voice_profile.json
   model: null                       # path to the WeSpeaker ECAPA-TDNN ONNX model;
-                                     # null downloads it on first use
+                                     # null downloads it on first use (25 MB,
+                                     # CC BY 4.0 -- see juno_core/assets.py)
 
 # --- speech-to-text: pick ONE and fill in the matching section below --------
 # See README.md, "Choosing a speech-to-text engine", for the tradeoffs.

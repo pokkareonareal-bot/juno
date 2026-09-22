@@ -3,7 +3,13 @@ name = "juno-core"
 version = "0.1.0"
 description = "Wake-word-free addressee detection for a voice assistant: decides whether an utterance was meant for it, not what to do about it. BYOK, BYO speech-to-text, BYO agent."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.24",

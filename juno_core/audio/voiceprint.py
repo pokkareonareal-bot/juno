@@ -64,14 +64,8 @@ from pathlib import Path
 
 import numpy as np
 
-# WeSpeaker's ECAPA-TDNN, 512 channels, VoxCeleb + large-margin finetune.
-MODEL_URL = (
-    "https://huggingface.co/Wespeaker/wespeaker-ecapa-tdnn512-LM/resolve/main/"
-    "voxceleb_ECAPA512_LM.onnx"
-)
-DEFAULT_MODEL_PATH = (
-    Path(__file__).resolve().parent.parent / "data" / "models" / "ecapa_tdnn512.onnx"
-)
+# WeSpeaker's ECAPA-TDNN, 512 channels, VoxCeleb + large-margin finetune
+# (CC BY 4.0). Pinned and downloaded on first use by juno_core/assets.py.
 DEFAULT_PROFILE_PATH = (
     Path(__file__).resolve().parent.parent / "data" / "voiceprint.json"
 )
@@ -220,7 +214,12 @@ class VoicePrint:
         # wearer did not speak. Written by the calibration; the default is a
         # starting point, not a result.
         self.threshold = float(get("threshold", 0.55))
-        self.model_path = Path(get("model", "") or DEFAULT_MODEL_PATH)
+        from juno_core.assets import default_path
+
+        configured = get("model", "") or ""
+        # Only the default location is downloaded into; a path you set is yours.
+        self._auto_download = not configured
+        self.model_path = Path(configured).expanduser() if configured else default_path("ecapa")
         self.profile_path = Path(get("profile", "") or DEFAULT_PROFILE_PATH)
         self.calibrated_for = str(get("calibrated_for", "") or "").strip()
         self.device = ""
@@ -251,14 +250,29 @@ class VoicePrint:
 
     @property
     def available(self) -> bool:
-        return self.model_path.exists()
+        return self._fetch()
+
+    def _fetch(self) -> bool:
+        """True once the model file is on disk, downloading it if it's ours to."""
+        if self.model_path.exists():
+            return True
+        if not self._auto_download:
+            return False
+        from juno_core.assets import AssetError, ensure
+
+        try:
+            ensure("ecapa", self.model_path)
+        except AssetError as exc:
+            self._emit("voiceprint_download_failed", error=str(exc)[:200])
+            return False
+        return True
 
     def _session_or_none(self):
         if self._session is not None:
             return self._session
         with self._lock:
             if self._session is None:
-                if not self.model_path.exists():
+                if not self._fetch():
                     return None
                 try:
                     import onnxruntime as ort

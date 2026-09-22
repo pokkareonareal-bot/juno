@@ -35,6 +35,8 @@ _FRIENDLY = {
     "llm_started": "thinking...",
     "llm_finished": "done",
     "error": "something went wrong: {detail}",
+    "backend_fallback": "(voice detection model unavailable -- using the simpler "
+                        "energy detector instead: {reason})",
 }
 
 

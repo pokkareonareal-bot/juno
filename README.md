@@ -2,6 +2,12 @@
 
 **Decides whether you're talking to it. No wake word.**
 
+> **Status: early (v0.1).** It runs end to end, but it's young: expect rough
+> edges, and interfaces may change between releases. The accuracy figures in
+> this README come from the original project's internal evaluation on a small
+> set, and that evaluation isn't included here yet, so treat them as
+> indicative. Issues and reports from real rooms are very welcome.
+
 Most voice assistants need "Hey Siri" or "OK Google" because they can't tell
 the difference between speech aimed at them and speech aimed at anybody else
 in the room. This is the part that can tell the difference — continuous
@@ -11,7 +17,7 @@ answer is yes.
 
 This repo is *only* that decision-making technology. It ships with:
 
-- no speech-to-text engine baked in (bring your own — two are wired up and ready)
+- no speech-to-text engine baked in (bring your own — three are wired up and ready)
 - no text-to-speech baked in (same — plug one in, or just read the answer)
 - no specific language model — BYOK, and OpenAI / Anthropic / Gemini / a
   local Ollama model all work out of the box
@@ -24,7 +30,7 @@ transcript for evidence of who it's for. About 6,000 lines of Python, pulled
 out of a larger personal-assistant project (Juno) where everything past this
 point — the tool loop, the specific model, the speech synthesis — is the
 *product*, replaceable and not the interesting part. This is the part that
-was hard to get right, and it's MIT-licensed so you don't have to redo it.
+was hard to get right, and it's Apache-2.0-licensed so you don't have to redo it.
 
 Every number in this README was measured — see [REPORT.txt](REPORT.txt) for
 the methodology and the honest limits (section 6 of it, specifically — read
@@ -51,9 +57,14 @@ cp .env.example .env
 python run.py
 ```
 
-Talk to it. By default it'll hear you and correctly decide whether you were
-talking to it — but until you add a language-model key below, it just tells
-you what it heard instead of actually answering. That's deliberate: you can
+The first run downloads the voice-activity model (2 MB) and your
+speech-to-text engine's weights, then works offline. To fetch the models up
+front instead, run `python -m juno_core.assets`.
+
+Talk to it. By default it'll hear you and decide whether you were talking
+to it — but until you add a language-model key below, it just tells you what
+it heard instead of actually answering, and the genuinely unclear sentences
+(about 1 in 5) get no second opinion, so it stays quiet on those. That's deliberate: you can
 confirm the interesting half (the listening) works before deciding whose API
 you want doing the answering.
 
@@ -213,7 +224,8 @@ just a plain HTTPS call, so there's no dependency to add for a fifth.
 python enroll.py
 ```
 
-Eight short prompted sentences, under a minute. This is what lets the gate
+Eight short prompted sentences, under a minute (the first time, it also
+downloads the 25 MB speaker model). This is what lets the gate
 tell *you* apart from someone else talking near an open microphone — see
 "The numbers" below for how well (97.9% on the bundled eval). Nothing but a
 192-number voice template is kept; no audio. Skip this step and everything
@@ -487,7 +499,7 @@ juno_core/
     intent.py              the addressee-detection engine itself
     followups.py           "say that again" / "tell me more", detected cheaply
     executor.py             the narrow interface for handing off long-running work
-  stt/                    speech-to-text: the interface, plus two ready adapters
+  stt/                    speech-to-text: the interface, plus three ready adapters
   llm/                    the BYOK language-model interface and four adapters
   tts/                     optional text-to-speech interface and two adapters
   pipeline.py               wires all of the above into one running loop
@@ -510,7 +522,21 @@ described above and the default (replaceable) reply.
 
 ---
 
+## Third-party models
+
+Juno doesn't bundle model weights. It downloads them on first use (see
+`juno_core/assets.py`), each pinned to one version and checked against a
+SHA-256 checksum:
+
+| Model | Used for | Licence | Source |
+|---|---|---|---|
+| Silero VAD v6.2.2, Silero Team | voice activity detection | MIT | [snakers4/silero-vad](https://github.com/snakers4/silero-vad) |
+| WeSpeaker ECAPA-TDNN512-LM, WeSpeaker team, trained on VoxCeleb | speaker verification (`enroll.py`) | CC BY 4.0 | [Wespeaker/wespeaker-ecapa-tdnn512-LM](https://huggingface.co/Wespeaker/wespeaker-ecapa-tdnn512-LM) |
+| OpenAI Whisper (via `mlx-community` or `Systran` conversions) | speech-to-text, if you pick a local engine | MIT | downloaded by `mlx-whisper` / `faster-whisper` |
+
+If you redistribute any of these, keep their licence and attribution.
+
 ## License
 
-MIT — see [LICENSE](LICENSE). Use it, fork it, put it in something that has
-nothing to do with the project it came from.
+Apache License 2.0 — see [LICENSE](LICENSE). Use it, fork it, put it in
+something that has nothing to do with the project it came from.

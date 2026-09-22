@@ -836,7 +836,11 @@ class IntentEngine:
                 timeout=float(config.get("llm_adjudicator_timeout", 1.5)),
                 assistant_name=assistant_name,
             )
-            if (model is not None and config.get("llm_adjudicator", True))
+            # A placeholder (the echo model) repeats its prompt back, and the
+            # prompt contains digits -- "0s ago" -- which the adjudicator would
+            # read as its verdict. No second opinion beats a random one.
+            if (model is not None and not getattr(model, "placeholder", False)
+                and config.get("llm_adjudicator", True))
             else None
         )
         # How much the adjudicator is trusted relative to the heuristic.

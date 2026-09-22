@@ -27,13 +27,6 @@ import numpy as np
 from juno_core.audio.buffering import PrerollBuffer, SegmentAccumulator
 from juno_core.audio.capture import AudioFrame
 
-SILERO_URL = (
-    "https://raw.githubusercontent.com/snakers4/silero-vad/master/"
-    "src/silero_vad/data/silero_vad.onnx"
-)
-DEFAULT_SILERO_PATH = (
-    Path(__file__).resolve().parent.parent / "data" / "models" / "silero_vad.onnx"
-)
 
 
 @dataclass
@@ -109,15 +102,13 @@ class SileroVAD(VADBackend):
     # rather than loud, so the whole pipeline would simply never trigger.
     CONTEXT_SAMPLES = {16000: 64, 8000: 32}
 
-    def __init__(self, model_path: str | Path = DEFAULT_SILERO_PATH, sample_rate: int = 16000):
+    def __init__(self, model_path: str | Path | None = None, sample_rate: int = 16000):
         import onnxruntime as ort
 
-        model_path = Path(model_path)
-        if not model_path.exists():
-            raise FileNotFoundError(
-                f"Silero VAD model not found at {model_path}. "
-                f"Run scripts/fetch_assets.py, or set vad.backend: energy."
-            )
+        from juno_core.assets import ensure
+
+        # Downloaded (pinned, checksummed) on first use -- see juno_core/assets.py.
+        model_path = ensure("silero_vad", model_path)
         if sample_rate not in self.REQUIRED_SAMPLES:
             raise ValueError(f"Silero supports 8k/16k, not {sample_rate}")
 
@@ -188,7 +179,7 @@ def build_vad(config, sample_rate: int, observer=None) -> VADBackend:
     if backend != "silero":
         raise ValueError(f"unknown vad backend {backend!r}")
     try:
-        return SileroVAD(sample_rate=sample_rate)
+        return SileroVAD(config.get("model"), sample_rate=sample_rate)
     except Exception as exc:
         if observer:
             from juno_core.events import Stage
