@@ -13,7 +13,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Local, offline speech-to-text (recommended default -- see README).
+# Local, offline speech-to-text (see README). mlx on Apple Silicon (runs on
+# the GPU), faster-whisper everywhere else.
+mlx = ["mlx-whisper>=0.4; sys_platform == 'darwin' and platform_machine == 'arm64'"]
 faster-whisper = ["faster-whisper>=1.0"]
 # Anything that talks to a cloud API over plain HTTPS (OpenAI Whisper/TTS,
 # any adapter you write against a REST endpoint) needs this.

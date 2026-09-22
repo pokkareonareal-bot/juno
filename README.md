@@ -35,13 +35,15 @@ that before you quote any of this elsewhere).
 ## Quickstart
 
 You'll have something you can talk to in about five minutes, using the
-free/local defaults (`faster-whisper` for hearing you, nothing for a language
+free/local defaults (local Whisper for hearing you, via `mlx-whisper` on an
+Apple Silicon Mac and `faster-whisper` everywhere else, and no language
 model until you add a key). Requires Python 3.10+.
 
 ```bash
 git clone <this-repo-url> juno-core
 cd juno-core
-pip install -e ".[faster-whisper]"
+pip install -e ".[mlx]"               # Apple Silicon Mac
+# pip install -e ".[faster-whisper]"  # Linux, Windows, Intel Mac
 
 cp config.example.yaml config.yaml
 cp .env.example .env
@@ -97,8 +99,8 @@ instead of a plain chat reply, and what the numbers above actually mean.
                                    conservative (see "The numbers" below).
       |
       v
-  SPEECH-TO-TEXT                  Yours. Two ready-made options included
-  juno_core/stt/                  (juno_core/stt/faster_whisper.py, .../
+  SPEECH-TO-TEXT                  Yours. Three ready-made options included
+  juno_core/stt/                  (mlx_whisper.py, faster_whisper.py,
   (bring your own)                openai_whisper.py); implement the ~15-line
                                    interface for anything else.
       |
@@ -133,7 +135,8 @@ ever imports a provider — see REPORT.txt section 1.
 ### 1. Install
 
 ```bash
-pip install -e ".[faster-whisper]"     # recommended: local speech-to-text
+pip install -e ".[mlx]"                # recommended on Apple Silicon: local, on the GPU
+pip install -e ".[faster-whisper]"     # recommended elsewhere: local, on the CPU
 # or, for the cloud option instead:
 pip install -e ".[http]"
 ```
@@ -156,16 +159,20 @@ was measured with. `.env` holds API keys and is gitignored; never commit it.
 
 ### 3. Choose a speech-to-text engine
 
-This repo doesn't ship one — that's the "no STT baked in" part — but two are
-ready to select by name, and adding your own is a small class (see below).
+This repo doesn't ship one — that's the "no STT baked in" part — but three
+are ready to select by name, and adding your own is a small class (see
+below). The default, `stt.provider: auto`, picks `mlx_whisper` on an Apple
+Silicon Mac when it's installed and `faster_whisper` otherwise.
 
 | | `stt.provider` | Where it lives | Needs | When to pick it |
 |---|---|---|---|---|
-| **faster-whisper** (recommended) | `faster_whisper` | `juno_core/stt/faster_whisper.py` | `pip install faster-whisper` | Local, offline, free. First run downloads model weights (a few hundred MB) and caches them. Runs fine on CPU. |
+| **mlx-whisper** (recommended on Apple Silicon) | `mlx_whisper` | `juno_core/stt/mlx_whisper.py` | `pip install mlx-whisper`, an M-series Mac | Local, offline, free. Runs Whisper on the Mac's GPU through Apple's MLX framework. First run downloads the converted weights from Hugging Face (`mlx-community`) and caches them. Doesn't run on Linux, Windows or Intel Macs. |
+| **faster-whisper** (recommended elsewhere) | `faster_whisper` | `juno_core/stt/faster_whisper.py` | `pip install faster-whisper` | Local, offline, free, and runs anywhere. First run downloads model weights (a few hundred MB) and caches them. Its CTranslate2 backend has no Metal support, so on a Mac it runs on the CPU. Fine, but slower than MLX there. |
 | OpenAI Whisper API | `openai_whisper` | `juno_core/stt/openai_whisper.py` | `OPENAI_API_KEY`, `pip install requests` | Simplest possible setup, no local model — audio leaves the machine. |
 
-Set `stt.provider` (and, for faster-whisper, `stt.model` — `tiny.en` through
-`medium.en`, bigger is slower and more accurate) in `config.yaml`.
+Set `stt.provider` (and, for the two local engines, `stt.model` — `tiny.en`
+through `medium.en`, or `large-v3-turbo`; bigger is slower and more accurate;
+both engines take the same names) in `config.yaml`.
 
 **Using something else** (a different local model, a different cloud API):
 put a new file in `juno_core/stt/`, implement the interface in

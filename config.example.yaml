@@ -47,12 +47,16 @@ own_voice:
 # --- speech-to-text: pick ONE and fill in the matching section below --------
 # See README.md, "Choosing a speech-to-text engine", for the tradeoffs.
 stt:
-  provider: faster_whisper          # faster_whisper (local, offline, free) |
-                                     # openai_whisper (cloud, needs OPENAI_API_KEY)
-  # faster_whisper settings:
-  model: small.en                   # tiny.en | base.en | small.en | medium.en -- bigger
-                                     # is more accurate and slower; small.en is a fair
-                                     # default on a laptop CPU
+  provider: auto                    # auto (mlx_whisper on Apple Silicon if installed,
+                                     # else faster_whisper) | mlx_whisper (local, Mac
+                                     # GPU) | faster_whisper (local, CPU/CUDA, runs
+                                     # anywhere) | openai_whisper (cloud, needs
+                                     # OPENAI_API_KEY)
+  # local engine settings (mlx_whisper and faster_whisper take the same names):
+  model: small.en                   # tiny.en | base.en | small.en | medium.en |
+                                     # large-v3-turbo -- bigger is more accurate and
+                                     # slower; mlx_whisper also takes any HF repo/path
+  # faster_whisper only:
   device: cpu                       # cpu | cuda
   compute_type: int8
 
