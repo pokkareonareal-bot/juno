@@ -70,116 +70,149 @@ class ProsodyFeatures:
         }
 
 
+_EMPTY_PROSODY = ProsodyFeatures(
+    f0_mean=0.0, f0_std=0.0, f0_slope=0.0, voiced_ratio=0.0,
+    spectral_centroid=0.0, spectral_rolloff=0.0, spectral_tilt_log=0.0,
+    zcr=0.0, pause_before=0.0,
+)
+
+# Frames per FFT batch. Bounds peak memory on a max-length segment (a few MB)
+# while keeping each batch large enough that NumPy, not Python, does the work.
+_CHUNK = 512
+_WINDOW = np.hanning(FRAME_LEN)
+_FREQS_CACHE: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+
+
+def _acf_size(max_lag: int) -> int:
+    """Smallest 5-smooth FFT length that gives exact lags 0..max_lag.
+
+    A circular autocorrelation of length n only wraps lags above
+    n - FRAME_LEN, and pitch never looks past max_lag -- so FRAME_LEN +
+    max_lag points suffice (720 at 16 kHz, against 1024 for the full-length
+    correlation). 5-smooth sizes are the ones pocketfft is fast at.
+    """
+    n = FRAME_LEN + max_lag
+    while True:
+        m = n
+        for p in (2, 3, 5):
+            while m % p == 0:
+                m //= p
+        if m == 1:
+            return n
+        n += 1
+
+
+def _freqs(sample_rate: int) -> tuple[np.ndarray, np.ndarray]:
+    cached = _FREQS_CACHE.get(sample_rate)
+    if cached is None:
+        freqs = np.fft.rfftfreq(N_FFT, 1.0 / sample_rate)
+        cached = (freqs, freqs < 1000.0)
+        _FREQS_CACHE[sample_rate] = cached
+    return cached
+
+
 def extract_prosody(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> ProsodyFeatures:
-    """Extract scale-invariant prosody features from mono PCM audio."""
+    """Extract scale-invariant prosody features from mono PCM audio.
+
+    Runs before transcription, on the critical path, so every per-frame step
+    is batched: frames are strided views of the signal (no copies), pitch comes
+    from an FFT autocorrelation of all frames at once, and the spectrum is
+    computed once per batch. The values match the frame-by-frame reference to
+    floating-point precision; a model trained on either reads the same.
+    """
     pcm = np.asarray(audio, dtype=np.float32).ravel()
     if pcm.size < FRAME_LEN:
-        return ProsodyFeatures(
-            f0_mean=0.0, f0_std=0.0, f0_slope=0.0, voiced_ratio=0.0,
-            spectral_centroid=0.0, spectral_rolloff=0.0, spectral_tilt_log=0.0,
-            zcr=0.0, pause_before=0.0,
-        )
+        return _EMPTY_PROSODY
 
     # 1. Zero crossing rate
     signs = np.signbit(pcm)
-    zcr = float(np.mean(np.abs(np.diff(signs)))) if signs.size > 1 else 0.0
+    zcr = float(np.count_nonzero(signs[1:] != signs[:-1])) / (pcm.size - 1)
+
+    n_frames = (pcm.size - FRAME_LEN) // HOP
+    if n_frames <= 0:
+        return ProsodyFeatures(
+            f0_mean=0.0, f0_std=0.0, f0_slope=0.0, voiced_ratio=0.0,
+            spectral_centroid=0.0, spectral_rolloff=0.0, spectral_tilt_log=0.0,
+            zcr=zcr, pause_before=0.0,
+        )
+    frames = np.lib.stride_tricks.sliding_window_view(pcm, FRAME_LEN)[::HOP][:n_frames]
 
     # 2. Pause before speech onset (scale-invariant relative threshold)
-    n_frames = (pcm.size - FRAME_LEN) // HOP
-    frame_energies = np.zeros(n_frames, dtype=np.float32)
-    for i in range(n_frames):
-        start = i * HOP
-        f = pcm[start : start + FRAME_LEN]
-        frame_energies[i] = np.mean(f * f)
-
-    max_energy = float(np.max(frame_energies)) if frame_energies.size > 0 else 0.0
+    frame_energies = np.mean(frames * frames, axis=1)
+    max_energy = float(np.max(frame_energies))
     pause_before = 0.0
     if max_energy > 1e-8:
-        threshold = 0.02 * max_energy
-        above = np.where(frame_energies > threshold)[0]
+        above = np.flatnonzero(frame_energies > 0.02 * max_energy)
         if above.size > 0:
             pause_before = float(above[0] * HOP) / float(sample_rate)
 
-    # 3. F0 pitch tracking via autocorrelation
     min_lag = max(1, int(sample_rate / FMAX_HZ))
     max_lag = min(FRAME_LEN - 1, int(sample_rate / FMIN_HZ))
-    pitches: list[float] = []
+    acf_n = _acf_size(max_lag)
+    freqs, low_mask = _freqs(sample_rate)
 
-    for i in range(n_frames):
-        start = i * HOP
-        frame = pcm[start : start + FRAME_LEN]
-        frame = frame - np.mean(frame)
-        e0 = float(np.dot(frame, frame))
-        if e0 < 1e-8:
-            continue
-        corr = np.correlate(frame, frame, mode="full")
-        corr = corr[len(frame) - 1 :]
-        r_norm = corr / e0
-        if max_lag + 1 > len(r_norm):
-            continue
-        lag_window = r_norm[min_lag : max_lag + 1]
-        best_offset = int(np.argmax(lag_window))
-        peak_lag = min_lag + best_offset
-        peak_val = float(r_norm[peak_lag])
-        if peak_val >= 0.35:
-            pitches.append(float(sample_rate) / peak_lag)
+    pitch_parts: list[np.ndarray] = []
+    centroid_parts: list[np.ndarray] = []
+    rolloff_parts: list[np.ndarray] = []
+    tilt_parts: list[np.ndarray] = []
 
-    voiced_ratio = len(pitches) / max(1, n_frames)
-    if pitches:
+    for lo in range(0, n_frames, _CHUNK):
+        block = frames[lo : lo + _CHUNK].astype(np.float64)
+
+        # 3. F0 via normalised autocorrelation, all frames at once
+        centred = block - block.mean(axis=1, keepdims=True)
+        e0 = np.einsum("ij,ij->i", centred, centred)
+        spec = np.fft.rfft(centred, n=acf_n, axis=1)
+        acf = np.fft.irfft(spec.real ** 2 + spec.imag ** 2, n=acf_n, axis=1)
+        lags = acf[:, min_lag : max_lag + 1]
+        best = np.argmax(lags, axis=1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            peak = lags[np.arange(lags.shape[0]), best] / e0
+        voiced = (e0 >= 1e-8) & (peak >= 0.35)
+        pitch_parts.append(float(sample_rate) / (min_lag + best[voiced]))
+
+        # 4. Spectral shape (centroid, rolloff, tilt)
+        power = np.fft.rfft(block * _WINDOW, n=N_FFT, axis=1)
+        power = power.real ** 2 + power.imag ** 2
+        total = power.sum(axis=1)
+        keep = total >= 1e-8
+        if not np.any(keep):
+            continue
+        power, total = power[keep], total[keep]
+        centroid_parts.append(power @ freqs / total)
+        cum = np.cumsum(power, axis=1)
+        idx = np.minimum(np.sum(cum < (0.85 * total)[:, None], axis=1), freqs.size - 1)
+        rolloff_parts.append(freqs[idx])
+        p_low = power[:, low_mask].sum(axis=1)
+        tilt_parts.append(p_low / (total - p_low + 1e-8))
+
+    pitches = np.concatenate(pitch_parts)
+    voiced_ratio = pitches.size / max(1, n_frames)
+    if pitches.size:
         f0_mean = float(np.mean(pitches))
         f0_std = float(np.std(pitches))
-        if len(pitches) >= 4:
-            q_len = max(1, len(pitches) // 4)
+        if pitches.size >= 4:
+            q_len = max(1, pitches.size // 4)
             q1 = float(np.mean(pitches[:q_len]))
             q4 = float(np.mean(pitches[-q_len:]))
             f0_slope = (q4 - q1) / max(1.0, f0_mean)
         else:
             f0_slope = 0.0
     else:
-        f0_mean = 0.0
-        f0_std = 0.0
-        f0_slope = 0.0
+        f0_mean = f0_std = f0_slope = 0.0
 
-    # 4. Spectral features (centroid, rolloff, tilt)
-    window = np.hanning(FRAME_LEN)
-    freqs = np.fft.rfftfreq(N_FFT, 1.0 / sample_rate)
-    low_mask = freqs < 1000.0
+    def _mean(parts: list[np.ndarray]) -> float:
+        return float(np.mean(np.concatenate(parts))) if parts else 0.0
 
-    centroids: list[float] = []
-    rolloffs: list[float] = []
-    tilts: list[float] = []
-
-    for i in range(n_frames):
-        start = i * HOP
-        frame = pcm[start : start + FRAME_LEN] * window
-        power = np.abs(np.fft.rfft(frame, n=N_FFT)) ** 2
-        total_p = float(np.sum(power))
-        if total_p < 1e-8:
-            continue
-        centroid = float(np.sum(freqs * power) / total_p)
-        centroids.append(centroid)
-
-        cum = np.cumsum(power)
-        idx = int(np.searchsorted(cum, 0.85 * total_p))
-        rolloffs.append(float(freqs[min(idx, len(freqs) - 1)]))
-
-        p_low = float(np.sum(power[low_mask]))
-        p_high = float(np.sum(power[~low_mask]))
-        tilts.append(p_low / (p_high + 1e-8))
-
-    mean_centroid = float(np.mean(centroids)) if centroids else 0.0
-    mean_rolloff = float(np.mean(rolloffs)) if rolloffs else 0.0
-    mean_tilt = float(np.mean(tilts)) if tilts else 0.0
-    spectral_tilt_log = math.log1p(max(0.0, mean_tilt))
-
+    mean_tilt = _mean(tilt_parts)
     return ProsodyFeatures(
         f0_mean=f0_mean,
         f0_std=f0_std,
         f0_slope=f0_slope,
         voiced_ratio=voiced_ratio,
-        spectral_centroid=mean_centroid,
-        spectral_rolloff=mean_rolloff,
-        spectral_tilt_log=spectral_tilt_log,
+        spectral_centroid=_mean(centroid_parts),
+        spectral_rolloff=_mean(rolloff_parts),
+        spectral_tilt_log=math.log1p(max(0.0, mean_tilt)),
         zcr=zcr,
         pause_before=pause_before,
     )
@@ -195,11 +228,7 @@ def extract_gate_features(
     if audio is not None and len(audio) > 0:
         prosody = extract_prosody(audio, sample_rate)
     else:
-        prosody = ProsodyFeatures(
-            f0_mean=0.0, f0_std=0.0, f0_slope=0.0, voiced_ratio=0.0,
-            spectral_centroid=0.0, spectral_rolloff=0.0, spectral_tilt_log=0.0,
-            zcr=0.0, pause_before=0.0,
-        )
+        prosody = _EMPTY_PROSODY
 
     # Conversational run
     run = 0

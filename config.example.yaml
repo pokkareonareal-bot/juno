@@ -21,14 +21,6 @@ audio:
   input_device: null               # substring match, e.g. "AirPods" -- null uses the
                                    # system default
 
-  # Optional: keep a local, on-disk copy of segments (audio + what the gate
-  # and intent engine decided about each one) to eventually train the
-  # learned gate on your own data. OFF by default, and it should stay off
-  # until you've read audio/retention.py's docstring and mean to turn it on.
-  retain_segments: false
-  retain_dir: data/segments
-  retain_max_mb: 500
-
 # --- voice activity detection -------------------------------------------------
 vad:
   backend: silero                  # silero (ONNX model, recommended) | energy (no
@@ -94,6 +86,16 @@ intent:
     long_seconds: 10.0
     short_seconds: 1.2
     low_confidence: 0.90
+    # Optional learned layer: a small logistic model trained OFFLINE with
+    # `python -m juno_core.intelligence.gate_training` (see README, "Training
+    # the pre-STT gate"). Its skip threshold lives in the model file, chosen on
+    # held-out speakers -- there is no default threshold to fall back on.
+    learned: false                  # true: the model, not the rules, decides skips
+    model_path: null                # null -> juno_core/data/models/gate_model.json
+    always_transcribe_wearer: true  # never skip your own confidently-verified voice;
+                                     # turn off only after evaluation shows it's safe
+    log_features: false             # also log the 20 feature NUMBERS per segment
+                                     # (never audio), for offline comparison
 
 # --- the language model (BYOK: bring your own key) ---------------------------
 # Used two places: (1) the intent adjudicator above, for the ~20% of

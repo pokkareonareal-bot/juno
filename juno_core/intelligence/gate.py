@@ -46,6 +46,25 @@ trusted. ``skip`` is what shadow becomes once that comparison has been read.
 Like the intent engine, every decision decomposes into named, weighted
 signals that are logged. A gate that cannot explain a skip is a gate that
 cannot be debugged at three in the morning by the person it just ignored.
+
+THE LEARNED LAYER, AND WHAT IT MAY NOT DO
+-----------------------------------------
+An optional logistic model (trained offline by gate_training.py on public or
+explicitly consented data -- never on audio captured by this runtime) scores
+p(assistant_directed) from the 20 features in features.py. Its skip
+threshold comes from the model file, chosen on held-out speakers and sessions
+for a target false-skip rate; there is no built-in default. Whatever it says,
+it cannot skip when:
+
+  - the assistant is waiting for an answer, a confirmation or an offer, or
+    the follow-up window is open;
+  - the enrolled voice was confidently detected (``always_transcribe_wearer``,
+    on unless evaluation shows a narrower exception is safe);
+  - feature extraction failed or produced something it cannot trust
+    (no audio, nothing voiced, a non-finite value);
+  - the model failed to load, or does not carry a threshold.
+
+Audio is only ever held in memory here: scored, handed to STT, released.
 """
 
 from __future__ import annotations
@@ -59,7 +78,7 @@ from typing import Sequence
 
 import numpy as np
 
-from juno_core.intelligence.features import extract_gate_features
+from juno_core.intelligence.features import FEATURE_NAMES, extract_gate_features
 
 MODES = ("off", "shadow", "skip")
 DEFAULT_MODEL_PATH = Path(__file__).resolve().parent.parent / "data" / "models" / "gate_model.json"
@@ -118,13 +137,9 @@ class Acoustics:
 
 # "The assistant has not spoken at all yet." Infinity is the right value in
 # code -- every comparison in this file works with it -- and the wrong one the
-# moment it is written down. json.dumps writes a bare Infinity, which Python
-# reads back and no other parser will; the observer's encoder writes null,
-# which made float() raise. Both happened: the retention sidecars were invalid
-# JSON, and scripts/gate_eval.py crashed on the FIRST utterance of every
-# session, which is the one measurement the whole shadow mode exists to
-# collect. So the conversion happens once, here, at the edge where a number
-# becomes data.
+# moment it is written down. JSON encoders write a bare Infinity, which many
+# parsers reject. The conversion happens once, here, at the edge where a
+# number becomes data.
 NEVER_SPOKEN = 1e9
 
 
@@ -176,8 +191,38 @@ class Decision:
     reason: str = ""                # why it must transcribe, when it must
     mode: str = "off"
     latency: float = 0.0
-    learned_confidence: float | None = None
+    rule_would_skip: bool = False
+    learned_confidence: float | None = None   # p(assistant_directed)
     learned_would_skip: bool = False
+    learned_reason: str = ""        # why the learned layer could not skip
+    features: np.ndarray | None = None
+    feature_latency: float = 0.0
+    model_latency: float = 0.0
+
+    def as_log(self, include_features: bool = False) -> dict:
+        """The numbers worth writing down. Never audio."""
+        out = {
+            "confidence": round(self.confidence, 3),
+            "would_skip": self.would_skip,
+            "skip": self.skip,
+            "mode": self.mode,
+            "reason": self.reason,
+            "rule_would_skip": self.rule_would_skip,
+            "signals": [s.as_json() for s in self.signals],
+            "latency_ms": round(self.latency * 1000.0, 3),
+        }
+        if self.learned_confidence is not None or self.learned_reason:
+            out.update(
+                learned_confidence=self.learned_confidence,
+                learned_would_skip=self.learned_would_skip,
+                learned_reason=self.learned_reason,
+                feature_ms=round(self.feature_latency * 1000.0, 3),
+                model_ms=round(self.model_latency * 1000.0, 3),
+            )
+        if include_features and self.features is not None:
+            out["features"] = {name: round(float(v), 5)
+                               for name, v in zip(FEATURE_NAMES, self.features)}
+        return out
 
 
 class Gate:
@@ -196,18 +241,24 @@ class Gate:
                 self.limits[key] = float(get(key))
         self.veto_acknowledgement = bool(get("veto_acknowledgement", True))
         self.use_learned = bool(get("learned", False))
+        self.always_transcribe_wearer = bool(get("always_transcribe_wearer", True))
+        # Compute and log the feature vector for every scored segment, even
+        # with no model loaded -- the numbers an offline evaluation needs.
+        self.log_features = bool(get("log_features", False))
         self._observer = observer
 
-        # Phase 3 learned layer
         model_path_cfg = get("model_path")
         self.model_path = Path(model_path_cfg) if model_path_cfg else DEFAULT_MODEL_PATH
         self.model_data: dict | None = None
+        self.model_error: str = ""
         self._weights: np.ndarray | None = None
         self._bias: float = 0.0
         self._scaler_mean: np.ndarray | None = None
         self._scaler_scale: np.ndarray | None = None
-        self._threshold: float = 0.25
+        self._threshold: float | None = None
         self._load_learned_model()
+        if self.mode != "off" and (self.model_data is not None or self.log_features):
+            self._warm_up()
 
         # What it has done, for /status. Shadow counts what it would have done.
         self.scored = 0
@@ -217,47 +268,127 @@ class Gate:
 
     def _load_learned_model(self) -> None:
         if not self.model_path.exists():
+            if self.use_learned:
+                self.model_error = f"no model at {self.model_path}"
             return
         try:
-            data = json.loads(self.model_path.read_text(encoding="utf-8"))
-            self._weights = np.asarray(data["weights"], dtype=np.float32)
-            self._bias = float(data["bias"])
-            self._scaler_mean = np.asarray(data["scaler_mean"], dtype=np.float32)
-            self._scaler_scale = np.asarray(data["scaler_scale"], dtype=np.float32)
-            self._threshold = float(data.get("threshold", 0.25))
-            self.model_data = data
-        except Exception:
+            self.load_model(json.loads(self.model_path.read_text(encoding="utf-8")))
+        except Exception as exc:          # a bad model must never stop the loop
             self.model_data = None
+            self._weights = None
+            self.model_error = f"{type(exc).__name__}: {exc}"
+            if self._observer is not None:
+                from juno_core.events import Stage
+
+                self._observer.emit(Stage.SYSTEM, "gate_model_failed", None,
+                                    path=str(self.model_path), error=self.model_error)
+
+    def load_model(self, data: dict) -> None:
+        """Install a model dict (the format gate_training.py writes)."""
+        n = len(FEATURE_NAMES)
+        names = data.get("feature_names")
+        if names is not None and tuple(names) != FEATURE_NAMES:
+            raise ValueError("model was trained on a different feature set")
+        weights = np.asarray(data["weights"], dtype=np.float64)
+        mean = np.asarray(data["scaler_mean"], dtype=np.float64)
+        scale = np.asarray(data["scaler_scale"], dtype=np.float64)
+        if weights.shape != (n,) or mean.shape != (n,) or scale.shape != (n,):
+            raise ValueError(f"model vectors must have {n} entries")
+        if not (np.all(np.isfinite(weights)) and np.all(np.isfinite(mean))
+                and np.all(np.isfinite(scale))):
+            raise ValueError("model contains non-finite values")
+        threshold = data.get("threshold")
+        # No threshold, no skipping: it has to be chosen on held-out data,
+        # not assumed.
+        self._threshold = None if threshold is None else float(threshold)
+        self._weights = weights
+        self._bias = float(data["bias"])
+        self._scaler_mean = mean
+        self._scaler_scale = np.maximum(scale, 1e-8)
+        self.model_data = data
+        self.model_error = ""
+
+    @staticmethod
+    def _warm_up() -> None:
+        """Pay the first-call cost (FFT plans, lazy imports) at start-up,
+        not on the first utterance -- measured at ~50 ms against ~5 ms."""
+        noise = np.random.default_rng(0).standard_normal(8000).astype(np.float32)
+        try:
+            extract_gate_features(noise * 0.01, 16000, Acoustics(0.5, 1.0),
+                                  Snapshot(since_ai=NEVER_SPOKEN))
+        except Exception:
+            pass
+
+    def predict(self, features: np.ndarray) -> float:
+        """p(assistant_directed) for one feature vector."""
+        scaled = (np.asarray(features, dtype=np.float64) - self._scaler_mean) / self._scaler_scale
+        logit = float(np.dot(scaled, self._weights) + self._bias)
+        return _sigmoid(logit)
 
     # -- the decision ------------------------------------------------------
 
     def score(self, acoustics: Acoustics, snapshot: Snapshot,
-              audio: np.ndarray | None = None, sample_rate: int = 16000) -> Decision:
+              audio: np.ndarray | None = None, sample_rate: int = 16000,
+              features: np.ndarray | None = None) -> Decision:
+        """Score one segment. ``features`` short-circuits extraction (offline
+        evaluation passes the stored vector, so it is judged by this exact
+        code rather than a re-implementation of it)."""
         started = time.perf_counter()
         if self.mode == "off":
             return Decision(confidence=1.0, mode=self.mode)
 
-        must = self._must_transcribe(acoustics, snapshot)
+        context_must = self._context_must(snapshot, acoustics)
+        must = context_must or self._voice_must(acoustics)
         signals = self._signals(acoustics, snapshot)
         logit = sum(s.weight for s in signals)
-        confidence = 1.0 / (1.0 + math.exp(-logit))
+        confidence = _sigmoid(logit)
         licensed = any(s.name in LICENSING for s in signals)
         rule_would_skip = (must is None and licensed
                            and confidence < self.limits["skip_below"])
 
-        # Learned model inference if available
         learned_conf: float | None = None
         learned_would_skip = False
-        if self.model_data is not None and self._weights is not None:
-            features = extract_gate_features(audio, sample_rate, acoustics, snapshot)
-            scaled = (features - self._scaler_mean) / np.maximum(self._scaler_scale, 1e-8)
-            l_logit = float(np.dot(scaled, self._weights) + self._bias)
-            learned_conf = round(1.0 / (1.0 + math.exp(-l_logit)), 4)
-            learned_would_skip = (must is None and learned_conf < self._threshold)
+        learned_reason = ""
+        feature_latency = model_latency = 0.0
+        have_model = self.model_data is not None and self._weights is not None
 
-        # If learned mode is enabled, it governs would_skip; otherwise rules gate governs
-        if self.use_learned and learned_conf is not None:
-            would_skip = (must is None and learned_would_skip)
+        # The fast path: when the answer is already "transcribe" and nothing
+        # will read the score, do not spend the extraction on the critical
+        # path. Shadow mode always scores -- measuring is its whole job.
+        needed = (have_model and (self.mode == "shadow" or context_must is None)) \
+            or self.log_features
+        if needed and features is None:
+            t0 = time.perf_counter()
+            try:
+                features = extract_gate_features(audio, sample_rate, acoustics, snapshot)
+            except Exception as exc:
+                features = None
+                learned_reason = f"feature extraction failed: {type(exc).__name__}"
+            feature_latency = time.perf_counter() - t0
+
+        if not have_model:
+            if self.use_learned:
+                learned_reason = learned_reason or f"model unavailable ({self.model_error or 'not loaded'})"
+        elif features is not None:
+            t0 = time.perf_counter()
+            try:
+                learned_conf = round(self.predict(features), 4)
+            except Exception as exc:
+                learned_reason = f"model failed: {type(exc).__name__}"
+            model_latency = time.perf_counter() - t0
+            if learned_conf is not None:
+                learned_reason = (context_must
+                                  or self._feature_problem(features, audio)
+                                  or ("" if self._threshold is not None
+                                      else "model has no calibrated threshold"))
+                learned_would_skip = (not learned_reason
+                                      and learned_conf < self._threshold)
+        elif not learned_reason and context_must:
+            learned_reason = context_must
+
+        if self.use_learned:
+            # Model failure, doubtful features, a missing threshold: transcribe.
+            would_skip = learned_would_skip
         else:
             would_skip = rule_would_skip
 
@@ -266,11 +397,16 @@ class Gate:
             signals=signals,
             would_skip=would_skip,
             skip=would_skip and self.mode == "skip",
-            reason=must or "",
+            reason="" if would_skip else ((learned_reason if self.use_learned else must) or ""),
             mode=self.mode,
             latency=time.perf_counter() - started,
+            rule_would_skip=rule_would_skip,
             learned_confidence=learned_conf,
             learned_would_skip=learned_would_skip,
+            learned_reason=learned_reason,
+            features=features,
+            feature_latency=feature_latency,
+            model_latency=model_latency,
         )
         self.scored += 1
         if must is not None:
@@ -288,6 +424,10 @@ class Gate:
         assistant, or where not looking would lose something that cannot be
         recovered: a "yes" to a question nobody else will ask again.
         """
+        return self._context_must(snapshot, acoustics) or self._voice_must(acoustics)
+
+    def _context_must(self, snapshot: Snapshot, acoustics: Acoustics) -> str | None:
+        """Reasons that bind the rules AND the learned model."""
         if snapshot.confirming:
             return "a confirmation is open"
         if snapshot.offer_pending:
@@ -296,19 +436,41 @@ class Gate:
             return "the assistant asked a question"
         if snapshot.since_ai < self.limits["cold_after"]:
             return "inside the follow-up window"
+        if (self.always_transcribe_wearer and acoustics.voice_confident
+                and acoustics.is_wearer):
+            return "the enrolled voice was confidently detected"
+        return None
+
+    def _voice_must(self, acoustics: Acoustics) -> str | None:
+        """The rules' own caution. The learned model sees voice_confident as
+        a feature and was evaluated with it, so this does not bind it."""
         if not acoustics.voice_confident:
             # Cannot tell who spoke. Skipping on a guess about identity is
             # how the wearer's own "yeah" gets ignored.
             return "the voice could not be checked"
         return None
 
+    @staticmethod
+    def _feature_problem(features: np.ndarray, audio: np.ndarray | None) -> str:
+        """Non-empty when the vector is not something to skip on."""
+        if not np.all(np.isfinite(features)):
+            return "non-finite features"
+        if audio is not None and len(audio) == 0:
+            return "no audio"
+        if features[FEATURE_NAMES.index("voiced_ratio")] <= 0.0:
+            return "nothing voiced in the segment"
+        if features[FEATURE_NAMES.index("duration")] <= 0.0:
+            return "zero-length segment"
+        return ""
+
     def _signals(self, acoustics: Acoustics, snapshot: Snapshot) -> list[Signal]:
         w, lim = self.weights, self.limits
         out = [Signal("bias", w["bias"])]
 
         if snapshot.since_ai >= lim["cold_after"]:
-            out.append(Signal("cold_conversation", w["cold_conversation"],
-                              f"{snapshot.since_ai:.0f}s since the assistant spoke"))
+            since = ("never spoken" if snapshot.since_ai >= NEVER_SPOKEN
+                     else f"{snapshot.since_ai:.0f}s since the assistant spoke")
+            out.append(Signal("cold_conversation", w["cold_conversation"], since))
             if snapshot.since_ai >= lim["very_cold_after"]:
                 out.append(Signal("very_cold_conversation", w["very_cold_conversation"]))
 
@@ -385,18 +547,28 @@ class Gate:
         if not any(s.name in LICENSING for s in signals):
             return True                  # nothing about the sound argues yet
         logit = sum(s.weight for s in signals)
-        return 1.0 / (1.0 + math.exp(-logit)) >= self.limits["skip_below"]
+        return _sigmoid(logit) >= self.limits["skip_below"]
 
     # -- reporting ---------------------------------------------------------
 
     def snapshot(self) -> dict:
         return {
             "mode": self.mode,
+            "learned": self.use_learned,
+            "model_loaded": self.model_data is not None,
+            "model_error": self.model_error,
             "scored": self.scored,
             "would_skip": self.would_skip,
             "skipped": self.skipped,
             "never_skip": self.never_skip,
         }
+
+
+def _sigmoid(logit: float) -> float:
+    if logit >= 0:
+        return 1.0 / (1.0 + math.exp(-logit))
+    z = math.exp(logit)
+    return z / (1.0 + z)
 
 
 def verdicts_from(utterances: Sequence, limit: int = 4) -> tuple:

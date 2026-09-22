@@ -355,6 +355,95 @@ in short, tests that drive real audio through the real pipeline rather than
 stub components in isolation, because every serious bug in this project's
 history passed its parts' own tests and broke where two parts met.
 
+## Training the pre-STT gate
+
+The gate in `intelligence/gate.py` decides whether to *look* (run
+speech-to-text), never whether to *answer*. It ships rule-based and in shadow
+mode. It can also load a small logistic model that scores
+p(assistant-directed) from the 20 numbers `features.py` computes. Everything
+needed to train and check that model is in `intelligence/gate_training.py`.
+
+**Privacy first.** At runtime a segment's audio stays in memory: it's scored,
+handed to STT, then released. Nothing in `juno_core` writes microphone audio
+to disk. The gate's log records scores, named signals and (with
+`intent.gate.log_features: true`) the feature numbers. It never records
+samples. Don't add a recorder to get training data. Use one of the sources
+below.
+
+**Training data has to be open-source compatible.** Juno is MIT-licensed, and
+a model trained here may ship with it, so the tooling enforces where rows
+come from:
+
+| source | licence | notes |
+| --- | --- | --- |
+| `ami` — AMI Meeting Corpus | CC BY 4.0 | human-to-human room conversation; attribution required |
+| `common_voice` — Mozilla Common Voice | CC0 | speaker/accent/mic diversity; don't try to identify speakers |
+| `speech_commands` — Google Speech Commands v0.02 | CC BY 4.0 | short commands; keep it a minority of the data |
+| `custom` | must be one of CC0, CC BY, PDDL, ODC-By, CDLA-Permissive, MIT, Apache-2.0 | declared per row |
+| `consented` | `consent=release` or `consent=internal` | your own recordings; see below |
+
+The tooling refuses non-commercial (NC) and share-alike (SA) licences,
+unlicensed audio (podcasts, YouTube, etc.) and audio from ordinary Juno use.
+None of the public sets really covers speech *to an assistant*, so you'll
+need a small **consented** set: people alternating between requests to Juno,
+talking to each other, and background chatter, in real rooms. Only mark it
+`consent=release` if participants agreed in writing that derived models and
+feature tables may be published. Otherwise mark it `internal`: you can
+evaluate on it, but a model trained on it (`--allow-internal`) is marked
+non-distributable. Use pseudonymous speaker IDs. The trained model file
+lists every source, its licence and its attribution. Keep that list if you
+redistribute the model. Licences above were checked when this was written.
+Confirm them on each dataset's page when you download it.
+
+```bash
+python -m juno_core.intelligence.gate_training sources            # registry
+python -m juno_core.intelligence.gate_training features \
+    --manifest manifest.csv --out rows.csv [--delete-source]        # clips -> numbers
+python -m juno_core.intelligence.gate_training train \
+    --rows rows.csv --out juno_core/data/models/gate_model.json --max-false-skip 0.01
+python -m juno_core.intelligence.gate_training evaluate --rows unseen.csv --model gate_model.json
+python -m juno_core.intelligence.gate_training shadow --log logs/juno.jsonl
+```
+
+- `features` reads 16 kHz integer-PCM WAVs listed in a manifest (`path`,
+  `label`, `source`, plus optional `speaker`, `session`, `room`, `mic`,
+  `start`/`end` and conversational context such as `since_ai` and
+  `awaiting_answer`). It runs the same `extract_gate_features` production
+  uses and writes feature rows. It never writes audio.
+  `--delete-source` deletes each *consented* clip once its row is written.
+  For features that match runtime segments, cut consented recordings with
+  the same VAD settings you run with.
+- `train` splits by speaker, session and room together, so no speaker,
+  session or room shows up in two splits. It fits on *train*, calibrates on
+  *select*, and picks the skip threshold on *select*: the largest threshold
+  whose false-skip rate (over `assistant_directed` and `uncertain` rows)
+  stays within `--max-false-skip`. It reports once on an untouched *holdout*.
+  The report covers false-skip rate with a 95% upper bound, skip rate per
+  class, worst speaker/mic/room/session, latency, the rules-only baseline on
+  the same rows, and, for each assistant-directed segment it would have
+  skipped, the features that pushed it there.
+- Every number comes from the runtime `Gate` given the stored vectors, so
+  what's evaluated is the code that runs.
+
+**Rolling it out:** set `intent.gate.learned: true` with `mode: shadow`, run
+it, and use `gate_training shadow` to compare every would-skip against the
+intent engine's verdict. Switch to `mode: skip` only once that comparison and
+the holdout report meet your false-skip target. Even then the gate always
+transcribes when:
+
+- Juno is waiting for an answer, a confirmation or an offer, or the
+  follow-up window is open;
+- your enrolled voice was confidently detected (`always_transcribe_wearer`);
+- features are doubtful (non-finite, or nothing voiced);
+- the model is missing or broken, or has no calibrated threshold.
+
+Setting `mode` back to `shadow` or `off` turns skipping off immediately.
+Feature extraction runs on the critical path, so it's batched through
+NumPy. That makes it about 5× faster than the frame-by-frame original
+(about 5 ms for a 5 s segment on an M1, and about 18 ms at the 20 s maximum),
+with the same output. In skip mode it doesn't run at all when a rule already
+requires transcription.
+
 ---
 
 ## What's in here
@@ -367,12 +456,11 @@ juno_core/
     buffering.py        pre-speech ring buffer
     voiceprint.py      speaker verification ("was that you")
     calibration.py     the enrolment flow behind enroll.py
-    retention.py       optional, consent-gated local recording for training
-                        your own gate (off by default — see its docstring)
   intelligence/
     context.py          conversation state: recent utterances, recent turns
     features.py          acoustic features (pitch, voicing, spectral shape)
     gate.py               pre-transcription "worth listening to?" check
+    gate_training.py      offline: build feature tables, train/evaluate the gate
     intent.py              the addressee-detection engine itself
     followups.py           "say that again" / "tell me more", detected cheaply
     executor.py             the narrow interface for handing off long-running work
@@ -384,6 +472,7 @@ juno_core/
 
 run.py            the entry point — start here
 enroll.py         optional voice enrolment
+tests/            python -m unittest discover tests
 examples/
   connect_an_agent.py   how to hook in your own agent instead of a plain reply
 config.example.yaml    copy to config.yaml
