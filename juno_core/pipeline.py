@@ -42,6 +42,7 @@ from .events import (
     SPEECH_START,
     TRANSCRIBE_STARTED,
     TRANSCRIPT_READY,
+    TRANSCRIPT_REJECTED,
     Stage,
 )
 from .intelligence.context import ConversationContext
@@ -165,11 +166,14 @@ class JunoPipeline:
             is_wearer=(estimate.is_wearer if estimate is not None and estimate.confident else None),
         )
         snapshot = self._gate_snapshot()
+        # The segment's audio lives only in memory: scored here, handed to
+        # STT below, then released. Nothing in this loop writes it to disk --
+        # the gate's log carries numbers (score, signals, optionally the
+        # feature vector), never samples.
         decision = self.gate.score(acoustics, snapshot, audio=segment.audio,
                                     sample_rate=self._rate)
         self._emit(Stage.SYSTEM, GATE_SCORED, turn_id,
-                   confidence=round(decision.confidence, 3), skip=decision.skip,
-                   mode=decision.mode, reason=decision.reason)
+                   **decision.as_log(include_features=self.gate.log_features))
         if decision.skip:
             self._emit(Stage.AUDIO, SEGMENT_DROPPED, turn_id, reason="gate")
             return
@@ -182,6 +186,7 @@ class JunoPipeline:
             self._busy = False
 
         if not transcript or not transcript.text.strip():
+            self._emit(Stage.STT, TRANSCRIPT_REJECTED, turn_id, reason="empty")
             return
         self._emit(Stage.STT, TRANSCRIPT_READY, turn_id, text=transcript.text)
 

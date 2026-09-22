@@ -70,7 +70,7 @@ def main() -> None:
 
     try:
         stt = build_stt(config.get("stt") or {})
-    except (ValueError, ImportError) as exc:
+    except (ValueError, ImportError, RuntimeError) as exc:
         print(f"\nCouldn't set up speech-to-text:\n  {exc}\n")
         raise SystemExit(1)
 

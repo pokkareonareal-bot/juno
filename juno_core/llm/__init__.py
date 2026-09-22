@@ -65,6 +65,9 @@ class BaseModel:
     """Shared plumbing for the bundled adapters: `complete` from `generate`."""
 
     name = "base"
+    # True for a stand-in that doesn't actually reason (EchoModel). Nothing
+    # should take its output as a judgement -- see IntentEngine.
+    placeholder = False
 
     def generate(self, messages, *, max_tokens=512, temperature=0.7,
                  timeout=30.0) -> ModelResponse:
@@ -86,6 +89,7 @@ class EchoModel(BaseModel):
     """
 
     name = "echo"
+    placeholder = True
 
     def generate(self, messages, *, max_tokens=512, temperature=0.7,
                  timeout=30.0) -> ModelResponse:

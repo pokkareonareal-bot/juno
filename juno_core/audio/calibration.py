@@ -185,8 +185,9 @@ class Calibration:
         if not voiceprint.available:
             self.stage = "done"
             self.result = {"measured": False, "device": self.device,
-                           "note": ("The speaker model is not downloaded. Run "
-                                    "scripts/fetch_assets.py --voiceprint.")}
+                           "note": ("The speaker model couldn't be downloaded. "
+                                    "Run `python -m juno_core.assets` once "
+                                    "you're online, then enrol again.")}
             return self.progress()
 
         profile = voiceprint.enrol(self.wearer)

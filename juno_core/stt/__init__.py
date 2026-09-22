@@ -87,7 +87,8 @@ def build_stt(config) -> "STTEngine":
     """Construct the configured `stt.provider`.
 
     `config` is the `stt:` section of config.yaml. See config.example.yaml
-    for the two bundled options (`faster_whisper`, `openai_whisper`) and the
+    for the bundled options (`auto`, `mlx_whisper`, `faster_whisper`,
+    `openai_whisper`) and the
     README section "Choosing a speech-to-text engine" for how to add your
     own -- it's a ~15-line class either way.
     """
@@ -97,10 +98,16 @@ def build_stt(config) -> "STTEngine":
             "stt.provider isn't set in config.yaml. See config.example.yaml "
             "and the README section 'Choosing a speech-to-text engine'."
         )
+    model = config.get("model", "small.en")
+    if provider == "auto":
+        provider = _local_provider()
+    if provider == "mlx_whisper":
+        from .mlx_whisper import MLXWhisperSTT
+        return MLXWhisperSTT(model=model)
     if provider == "faster_whisper":
         from .faster_whisper import FasterWhisperSTT
         return FasterWhisperSTT(
-            model=config.get("model", "small.en"),
+            model=model,
             device=config.get("device", "cpu"),
             compute_type=config.get("compute_type", "int8"),
         )
@@ -108,8 +115,24 @@ def build_stt(config) -> "STTEngine":
         from .openai_whisper import OpenAIWhisperSTT
         return OpenAIWhisperSTT(model=config.get("model", "whisper-1"))
     raise ValueError(
-        f"unknown stt.provider {provider!r} -- expected 'faster_whisper' or "
-        f"'openai_whisper', or add your own under juno_core/stt/ and extend "
+        f"unknown stt.provider {provider!r} -- expected 'auto', 'mlx_whisper', "
+        f"'faster_whisper' or 'openai_whisper', or add your own under juno_core/stt/ and extend "
         f"this factory (or just construct your STTEngine subclass directly "
         f"and pass it to JunoPipeline yourself, skipping this factory)"
     )
+
+
+def _local_provider() -> str:
+    """mlx_whisper on Apple Silicon when it's installed, else faster_whisper.
+
+    Both run locally and take the same `stt.model` names. MLX uses the Mac's
+    GPU; faster-whisper's backend has no Metal support and runs on the CPU
+    there, but it is the one that runs everywhere else.
+    """
+    import importlib.util
+
+    from .mlx_whisper import apple_silicon
+
+    if apple_silicon() and importlib.util.find_spec("mlx_whisper") is not None:
+        return "mlx_whisper"
+    return "faster_whisper"

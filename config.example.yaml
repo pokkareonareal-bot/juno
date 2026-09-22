@@ -21,18 +21,11 @@ audio:
   input_device: null               # substring match, e.g. "AirPods" -- null uses the
                                    # system default
 
-  # Optional: keep a local, on-disk copy of segments (audio + what the gate
-  # and intent engine decided about each one) to eventually train the
-  # learned gate on your own data. OFF by default, and it should stay off
-  # until you've read audio/retention.py's docstring and mean to turn it on.
-  retain_segments: false
-  retain_dir: data/segments
-  retain_max_mb: 500
-
 # --- voice activity detection -------------------------------------------------
 vad:
-  backend: silero                  # silero (ONNX model, recommended) | energy (no
-                                    # model, adaptive RMS threshold, no extra download)
+  backend: silero                  # silero (2 MB ONNX model, recommended, downloaded
+                                    # on first use) | energy (no model, adaptive RMS
+                                    # threshold, noticeably worse in noise)
   threshold: 0.5                   # speech-probability threshold
   min_speech_ms: 200                # onset debounce
   min_silence_ms: 550                # how long a pause has to be before a segment
@@ -50,17 +43,22 @@ own_voice:
                                       # guess wrong
   profile: data/voice_profile.json
   model: null                       # path to the WeSpeaker ECAPA-TDNN ONNX model;
-                                     # null downloads it on first use
+                                     # null downloads it on first use (25 MB,
+                                     # CC BY 4.0 -- see juno_core/assets.py)
 
 # --- speech-to-text: pick ONE and fill in the matching section below --------
 # See README.md, "Choosing a speech-to-text engine", for the tradeoffs.
 stt:
-  provider: faster_whisper          # faster_whisper (local, offline, free) |
-                                     # openai_whisper (cloud, needs OPENAI_API_KEY)
-  # faster_whisper settings:
-  model: small.en                   # tiny.en | base.en | small.en | medium.en -- bigger
-                                     # is more accurate and slower; small.en is a fair
-                                     # default on a laptop CPU
+  provider: auto                    # auto (mlx_whisper on Apple Silicon if installed,
+                                     # else faster_whisper) | mlx_whisper (local, Mac
+                                     # GPU) | faster_whisper (local, CPU/CUDA, runs
+                                     # anywhere) | openai_whisper (cloud, needs
+                                     # OPENAI_API_KEY)
+  # local engine settings (mlx_whisper and faster_whisper take the same names):
+  model: small.en                   # tiny.en | base.en | small.en | medium.en |
+                                     # large-v3-turbo -- bigger is more accurate and
+                                     # slower; mlx_whisper also takes any HF repo/path
+  # faster_whisper only:
   device: cpu                       # cpu | cuda
   compute_type: int8
 
@@ -94,6 +92,16 @@ intent:
     long_seconds: 10.0
     short_seconds: 1.2
     low_confidence: 0.90
+    # Optional learned layer: a small logistic model trained OFFLINE with
+    # `python -m juno_core.intelligence.gate_training` (see README, "Training
+    # the pre-STT gate"). Its skip threshold lives in the model file, chosen on
+    # held-out speakers -- there is no default threshold to fall back on.
+    learned: false                  # true: the model, not the rules, decides skips
+    model_path: null                # null -> juno_core/data/models/gate_model.json
+    always_transcribe_wearer: true  # never skip your own confidently-verified voice;
+                                     # turn off only after evaluation shows it's safe
+    log_features: false             # also log the 20 feature NUMBERS per segment
+                                     # (never audio), for offline comparison
 
 # --- the language model (BYOK: bring your own key) ---------------------------
 # Used two places: (1) the intent adjudicator above, for the ~20% of
