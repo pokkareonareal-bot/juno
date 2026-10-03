@@ -6,7 +6,7 @@
     python -m juno_core.intelligence.gate_training features --manifest m.csv --out rows.csv
     python -m juno_core.intelligence.gate_training train    --rows rows.csv --out model.json
     python -m juno_core.intelligence.gate_training evaluate --rows unseen.csv --model model.json
-    python -m juno_core.intelligence.gate_training shadow   --log logs/juno.jsonl
+    python -m juno_core.intelligence.gate_training shadow   --log logs/events.jsonl
 
 WHAT IT MAY LEARN FROM
 ----------------------

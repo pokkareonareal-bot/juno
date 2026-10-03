@@ -88,7 +88,7 @@ def build_stt(config) -> "STTEngine":
 
     `config` is the `stt:` section of config.yaml. See config.example.yaml
     for the bundled options (`auto`, `mlx_whisper`, `faster_whisper`,
-    `openai_whisper`) and the
+    `parakeet`, `openai_whisper`) and the
     README section "Choosing a speech-to-text engine" for how to add your
     own -- it's a ~15-line class either way.
     """
@@ -111,12 +111,16 @@ def build_stt(config) -> "STTEngine":
             device=config.get("device", "cpu"),
             compute_type=config.get("compute_type", "int8"),
         )
+    if provider == "parakeet":
+        from .parakeet import ParakeetSTT
+        return ParakeetSTT(model=model if str(model).startswith(("parakeet", "mlx-community/parakeet", "/", "."))
+                           else "parakeet-110m")
     if provider == "openai_whisper":
         from .openai_whisper import OpenAIWhisperSTT
         return OpenAIWhisperSTT(model=config.get("model", "whisper-1"))
     raise ValueError(
         f"unknown stt.provider {provider!r} -- expected 'auto', 'mlx_whisper', "
-        f"'faster_whisper' or 'openai_whisper', or add your own under juno_core/stt/ and extend "
+        f"'faster_whisper', 'parakeet' or 'openai_whisper', or add your own under juno_core/stt/ and extend "
         f"this factory (or just construct your STTEngine subclass directly "
         f"and pass it to JunoPipeline yourself, skipping this factory)"
     )

@@ -18,6 +18,7 @@ class Stage(str, Enum):
     STT = "stt"
     INTENT = "intent"
     LLM = "llm"
+    SLU = "slu"
     SYSTEM = "system"
 
 
@@ -38,6 +39,12 @@ INTENT_SCORED = "intent_scored"
 INTENT_ADJUDICATED = "intent_adjudicated"
 INTENT_ACCEPTED = "intent_accepted"
 INTENT_IGNORED = "intent_ignored"
+# System One (juno_core/slu): the typed decision made from audio alone, the
+# typed decision System Two made from the transcript, and what was handed to
+# the agent. In shadow mode the first two sit side by side in the log.
+SLU_DECIDED = "slu_decided"
+SLU_SYSTEM_TWO = "slu_system_two"
+DECISION_DELIVERED = "decision_delivered"
 LLM_STARTED = "llm_started"
 LLM_FINISHED = "llm_finished"
 ERROR = "error"

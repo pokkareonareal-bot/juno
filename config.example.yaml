@@ -52,8 +52,9 @@ stt:
   provider: auto                    # auto (mlx_whisper on Apple Silicon if installed,
                                      # else faster_whisper) | mlx_whisper (local, Mac
                                      # GPU) | faster_whisper (local, CPU/CUDA, runs
-                                     # anywhere) | openai_whisper (cloud, needs
-                                     # OPENAI_API_KEY)
+                                     # anywhere) | parakeet (local, Mac GPU, English,
+                                     # much faster: model parakeet-110m | parakeet-0.6b)
+                                     # | openai_whisper (cloud, needs OPENAI_API_KEY)
   # local engine settings (mlx_whisper and faster_whisper take the same names):
   model: small.en                   # tiny.en | base.en | small.en | medium.en |
                                      # large-v3-turbo -- bigger is more accurate and
@@ -102,6 +103,23 @@ intent:
                                      # turn off only after evaluation shows it's safe
     log_features: false             # also log the 20 feature NUMBERS per segment
                                      # (never audio), for offline comparison
+
+# --- System One: understanding from the audio itself (optional) --------------
+# A small model that listens to each utterance WITHOUT transcribing it and
+# answers, as typed JSON, "was that for me?" and "what was wanted?". Confident
+# and simple -> handled with no speech-to-text at all; not for Juno -> dropped;
+# anything else -> escalated to the transcribe-and-read path above, which
+# answers in the same JSON. See README, "System One", for training a model --
+# none ships, because a useful one has to be trained on data you may use.
+system_one:
+  mode: "off"                       # off | shadow (runs and logs next to the old
+                                     # path, changes nothing) | on (acts on its routes)
+  model_path: null                  # null -> juno_core/data/models/slu_student.npz
+  followup_window: 20.0             # seconds after Juno spoke when "ignore" is vetoed
+  # Optional: TIGHTEN the thresholds the model file measured (never loosen):
+  # thresholds:
+  #   act_intent: 0.95
+  #   ignore_below: 0.05
 
 # --- the language model (BYOK: bring your own key) ---------------------------
 # Used two places: (1) the intent adjudicator above, for the ~20% of

@@ -17,7 +17,7 @@ answer is yes.
 
 This repo is *only* that decision-making technology. It ships with:
 
-- no speech-to-text engine baked in (bring your own — three are wired up and ready)
+- no speech-to-text engine baked in (bring your own — four are wired up and ready)
 - no text-to-speech baked in (same — plug one in, or just read the answer)
 - no specific language model — BYOK, and OpenAI / Anthropic / Gemini / a
   local Ollama model all work out of the box
@@ -35,6 +35,14 @@ was hard to get right, and it's Apache-2.0-licensed so you don't have to redo it
 Every number in this README was measured — see [REPORT.txt](REPORT.txt) for
 the methodology and the honest limits (section 6 of it, specifically — read
 that before you quote any of this elsewhere).
+
+**New, experimental: System One.** Juno can now also understand *without
+transcribing*. A small model listens to the audio itself and answers, as
+typed JSON in a schema your agent declares, "was that for me?" and "what was
+wanted?". Simple, confident requests are handled with no speech-to-text at
+all, speech that wasn't for Juno is dropped, and everything else falls back
+to the transcribe-and-read path, which answers in the same JSON. It's off by
+default and ships without a model. See [System One](#system-one-understanding-without-transcribing).
 
 ---
 
@@ -104,16 +112,24 @@ instead of a plain chat reply, and what the numbers above actually mean.
                                    expensive part.
       |
       v
+  SYSTEM ONE (optional)           Understands from the audio alone: a speech
+  juno_core/slu/                  encoder, no decoder, and a small classifier.
+                                   ignore -> dropped; act -> typed JSON to your
+                                   agent, nothing transcribed; escalate -> on
+                                   down this diagram. Off by default; see
+                                   "System One" below.
+      |
+      v (escalate)
   WORTH TRANSCRIBING?             A gate that scores conversational timing
   juno_core/intelligence/gate.py  and acoustic tails to decide whether to
                                    even bother running speech-to-text. Ships
                                    conservative (see "The numbers" below).
       |
       v
-  SPEECH-TO-TEXT                  Yours. Three ready-made options included
+  SPEECH-TO-TEXT                  Yours. Four ready-made options included
   juno_core/stt/                  (mlx_whisper.py, faster_whisper.py,
-  (bring your own)                openai_whisper.py); implement the ~15-line
-                                   interface for anything else.
+  (bring your own)                parakeet.py, openai_whisper.py); implement
+                                   the ~15-line interface for anything else.
       |
       v
   WAS THAT MEANT FOR ME?          The core of this repo. A ~30-signal
@@ -170,7 +186,7 @@ was measured with. `.env` holds API keys and is gitignored; never commit it.
 
 ### 3. Choose a speech-to-text engine
 
-This repo doesn't ship one — that's the "no STT baked in" part — but three
+This repo doesn't ship one — that's the "no STT baked in" part — but four
 are ready to select by name, and adding your own is a small class (see
 below). The default, `stt.provider: auto`, picks `mlx_whisper` on an Apple
 Silicon Mac when it's installed and `faster_whisper` otherwise.
@@ -179,6 +195,7 @@ Silicon Mac when it's installed and `faster_whisper` otherwise.
 |---|---|---|---|---|
 | **mlx-whisper** (recommended on Apple Silicon) | `mlx_whisper` | `juno_core/stt/mlx_whisper.py` | `pip install mlx-whisper`, an M-series Mac | Local, offline, free. Runs Whisper on the Mac's GPU through Apple's MLX framework. First run downloads the converted weights from Hugging Face (`mlx-community`) and caches them. Doesn't run on Linux, Windows or Intel Macs. |
 | **faster-whisper** (recommended elsewhere) | `faster_whisper` | `juno_core/stt/faster_whisper.py` | `pip install faster-whisper` | Local, offline, free, and runs anywhere. First run downloads model weights (a few hundred MB) and caches them. Its CTranslate2 backend has no Metal support, so on a Mac it runs on the CPU. Fine, but slower than MLX there. |
+| **Parakeet** (fastest on Apple Silicon, English only) | `parakeet` | `juno_core/stt/parakeet.py` | `pip install -e ".[parakeet]"`, an M-series Mac | Local, offline, free. NVIDIA's Parakeet (CC BY 4.0 weights) on the Mac's GPU via MLX. `stt.model: parakeet-110m` or `parakeet-0.6b`. Measured on an M1 for a 2.6 s command: 45 ms (110M) and 85 ms (0.6B), against 354 ms for Whisper small.en. Also the model System One's encoder comes from. |
 | OpenAI Whisper API | `openai_whisper` | `juno_core/stt/openai_whisper.py` | `OPENAI_API_KEY`, `pip install requests` | Simplest possible setup, no local model — audio leaves the machine. |
 
 Set `stt.provider` (and, for the two local engines, `stt.model` — `tiny.en`
@@ -300,11 +317,189 @@ whenever it's ready). It's the same shape used internally to hand a long job
 to a stronger model without going deaf while it runs — read its docstring,
 which explains why the interface is kept deliberately narrow.
 
+### The typed seam (System One)
+
+The second seam takes **typed decisions** instead of text. Your agent
+declares what it can do — intents with typed slots — and Juno answers every
+utterance meant for you in that schema:
+
+```python
+def on_decision(decision: Decision, context: ConversationContext) -> str | None:
+    if decision.intent.value == "timer.set":
+        start_timer(decision.slots["duration"].value)       # seconds
+    ...
+
+pipeline = JunoPipeline(config, stt=stt, model=model, schema=my_schema,
+                        on_decision=on_decision)
+```
+
+`decision.source` is `"system_one"` when it was decided from the audio alone
+(`decision.transcript` is then `None`, because nothing was transcribed) or
+`"system_two"` when speech-to-text ran (and the transcript is attached).
+The shape is the same either way. With `on_decision` registered, System One
+may act on its own; without it, there is nothing for a typed answer to go to,
+so its `act` decisions escalate. The example file shows both seams.
+
 Nothing downstream of accepted-and-handed-off is this repo's business. It
 decided you were being spoken to; what happens next — what a request is
 allowed to do, what needs your confirmation before it happens, how far an
 agent is allowed to go on its own — is a decision for whatever you connect
 here, matched to what you're actually building.
+
+---
+
+## System One: understanding without transcribing
+
+> **Experimental, off by default, no model shipped.** Everything below was
+> measured on synthetic speech plus a few real corpora on one M1; read
+> "What these numbers don't say" before quoting any of it.
+
+Everything above transcribes first and reads second. System One makes
+transcription optional. A small model listens to each utterance *as audio*
+and answers, in a typed schema your agent declares, the two questions that
+matter: **was that for me**, and **what was wanted**.
+
+```
+  audio --> speech encoder (no decoder) --> pooled vector --> small classifier
+        --> {"route": "act" | "ignore" | "escalate", "addressed": ..., "intent": ..., "slots": ...}
+```
+
+- **ignore**: not for Juno. Dropped, nothing transcribed.
+- **act**: confident, typed and complete ("louder", "what time is it", "set a
+  timer for 7 minutes"). The JSON goes to your agent with no transcript and
+  no language-model call.
+- **escalate**: unsure, open-ended ("what's the capital of Mongolia"), or a
+  detail it can't be sure of. The old path runs (System Two) and answers
+  in the same JSON, with the transcript attached.
+
+The model is borrowed, not invented. It's the *encoder* half of a speech
+recogniser (NVIDIA Parakeet 110M by default, 17 ms on an M1), whose frames
+already carry the words, plus a classifier trained on top. It's trained by
+**distillation**: System Two, the expensive path, labels the training
+clips, and gold labels from scripted recordings can be mixed in.
+
+### Turning it on
+
+```yaml
+system_one:
+  mode: shadow          # runs and logs next to the old path; changes nothing
+  model_path: models/s1-parakeet-gold.npz
+```
+
+Run in `shadow` first. `python -m juno_core.slu shadow --log logs/events.jsonl`
+compares System One with System Two on every turn and lists every
+disagreement that would have mattered. Switch to `on` once you trust it. If
+the model file is missing, unreadable, or trained on another encoder or
+schema, System One switches itself off and Juno runs exactly as before.
+
+### Training a model
+
+```bash
+pip install -e ".[slu]"
+python -m juno_core.slu synth   --out data/slu/syn --size 3000 --augment 1 --noise 150
+python -m juno_core.slu import-ami --out data/slu/real
+python -m juno_core.slu import-speech-commands --out data/slu/real
+python -m juno_core.slu label   --manifest data/slu/syn/manifest.jsonl data/slu/real/*.jsonl \
+                                --out data/slu/labelled.jsonl --stt parakeet-0.6b
+python -m juno_core.slu embed   --rows data/slu/labelled.jsonl --encoder parakeet --out data/slu/emb
+python -m juno_core.slu train   --rows data/slu/labelled.jsonl --allow-internal --targets gold \
+                                --embeddings data/slu/emb/parakeet__*.npz --out models/s1.npz
+```
+
+`synth` voices a scripted corpus with macOS `say`. Apple's licence makes
+models trained on that audio **not distributable**, which is why
+`--allow-internal` is needed and the model file says so. For a model you
+can publish, use openly licensed speech plus your own consented sessions:
+`python -m juno_core.slu collect` keeps encoder vectors and labels, never
+audio. Nothing in `juno_core` writes audio. Augmented copies and corpus
+segments are recipes, rebuilt in memory.
+
+Thresholds are chosen on held-out speakers against explicit budgets
+(default: ≤1% false ignores, ≤1% wrong acts, ≤1% false activations, applied
+to an upper confidence bound). A model without measured thresholds never
+acts or ignores.
+
+### What it measured
+
+7,070 clips: 6,148 synthetic (30 macOS voices, half augmented with
+reverb/noise/far-field filtering, 150 non-speech), 562 real far-field
+meeting utterances (AMI), and 360 real "stop"/"yes"/"no" (Speech Commands).
+Results are on held-out *voices*, mean ± sd over 3 splits, from
+`python -m juno_core.slu sweep`:
+
+| Encoder | Labels | STT avoided | False ignore | False activation | Addressee AUC | Intent acc. |
+|---|---|---|---|---|---|---|
+| Gate's 20 acoustic features | gold | 6% ± 3 | 1.7% | 0.0% | 0.67 | 33% |
+| Log-mel, no pretraining | gold | 7% ± 0 | 0.7% | 0.0% | 0.75 | 36% |
+| Parakeet, first 4 layers | gold | 11% ± 5 | 0.4% | 0.0% | 0.87 | 71% |
+| Parakeet, first 8 layers | gold | 26% ± 7 | 0.6% | 0.0% | 0.93 | 86% |
+| **Parakeet, all 17 layers** | **gold** | **48% ± 3** | **0.4%** | **0.0%** | **0.99** | **95%** |
+| Parakeet, all 17 layers | mix | 34% ± 4 | 0.4% | 0.0% | 0.98 | 87% |
+| Parakeet, all 17 layers | teacher only | 1% ± 1 | 1.3% | 0.0% | 0.74 | 81% |
+| Whisper small.en encoder | gold | 47% ± 10 | 0.5% | 0.0% | 0.98 | 95% |
+
+What that says:
+
+- **A pretrained speech encoder is what makes this work.** Acoustic features
+  alone (the gate's, or log-mel) separate who an utterance was for only
+  weakly (AUC 0.67–0.75) and can safely skip almost nothing. The
+  recogniser's own encoder separates it almost perfectly, and the deeper
+  the layer, the better.
+- **Distilling from today's pipeline *alone* doesn't work, because of the
+  teacher.** Heard cold, with no conversation and no language-model second
+  opinion, System Two misses about half of short commands and open requests
+  (its own end-to-end accuracy on the held-out clips is 67%), and the student
+  inherits that.
+  Mixing in gold labels fixes most of it. A stronger teacher (`label --llm`,
+  a bigger recogniser) is the obvious next experiment.
+- **Simple commands go; details escalate.** Timer lengths were right only
+  about a quarter of the time from audio alone, so the router escalated
+  nearly all of them, as designed.
+- **Minimal pairs are the failure mode.** Every wrong act by the reference
+  model was "unpause" heard as `media.pause`: opposite commands that differ
+  by one short sound. Expect the same for "turn on/off", and test for it.
+
+**Live, end to end** (`python -m juno_core.slu bench`): 400 held-out clips,
+every system timed on the same M1 in one session. "Correct" means the right
+outcome against the gold label: ignored if it wasn't for Juno, otherwise
+the right intent and slots.
+
+| System | Correct | False activation | Missed | STT calls | p50 / p95 ms | Wall ms per utterance |
+|---|---|---|---|---|---|---|
+| always transcribe, Parakeet 110M | 59.3% | 3.4% | 65% | 100% | 36 / 67 | 40 |
+| always transcribe, Parakeet 0.6B | 65.7% | 3.4% | 54% | 100% | 81 / 134 | 90 |
+| always transcribe, Whisper small.en (today's default) | 63.0% | 3.4% | 60% | 100% | 315 / 441 | 366 |
+| always transcribe, Whisper large-v3-turbo | 66.7% | 3.4% | 53% | 100% | 1669 / 1980 | 1816 |
+| **System One + Parakeet 110M** | **70.0%** | **2.3%** | **49%** | **53%** | 38 / 71 | 37 |
+| **System One + Whisper small.en** | **73.5%** | **0.6%** | **44%** | **53%** | 345 / 449 | 244 |
+
+- **When System One decides** (47% of clips), the answer takes **16 ms**
+  (p50), against 36 ms for the fastest recogniser and 315 ms for Juno's
+  default one. **When it escalates**, those 16 ms are added on top of the
+  transcription.
+- So **against Whisper, compute per utterance falls by a third** (366 → 244
+  ms wall, 46 → 28 s CPU over the run). **Against Parakeet 110M the saving
+  is small** (40 → 37 ms): the encoder System One borrows is already a third
+  of that recogniser's whole cost. Skipping STT pays off in proportion to
+  how expensive your STT is.
+- The hybrid is *more* accurate than any always-transcribe system here,
+  because the student was trained with gold labels and catches requests the
+  cold teacher misses. Treat that with care: the student and its test clips
+  share phrasing templates.
+- Every system still misses many requests. That's the cold-start
+  conservatism of the addressee engine, with no conversation and no
+  language-model second opinion, not something System One introduced.
+
+### What these numbers don't say
+
+Most of the audio is synthetic, and synthetic train and test clips share
+phrasing templates (the split holds out voices, not wordings). Real-room
+performance is unmeasured until you record consented sessions or run shadow
+mode on your own use. Evaluation is cold (no conversation history), which is
+the teacher's worst case and makes context-bound intents ("yes" to a
+question) always escalate. One machine, one run. The full method, the
+baselines to compare against, and how to write it up are in
+[docs/system-one-experiments.md](docs/system-one-experiments.md).
 
 ---
 
@@ -424,7 +619,7 @@ python -m juno_core.intelligence.gate_training features \
 python -m juno_core.intelligence.gate_training train \
     --rows rows.csv --out juno_core/data/models/gate_model.json --max-false-skip 0.01
 python -m juno_core.intelligence.gate_training evaluate --rows unseen.csv --model gate_model.json
-python -m juno_core.intelligence.gate_training shadow --log logs/juno.jsonl
+python -m juno_core.intelligence.gate_training shadow --log logs/events.jsonl
 ```
 
 - `collect` runs a guided live session of about 10 minutes for two people.
@@ -499,7 +694,18 @@ juno_core/
     intent.py              the addressee-detection engine itself
     followups.py           "say that again" / "tell me more", detected cheaply
     executor.py             the narrow interface for handing off long-running work
-  stt/                    speech-to-text: the interface, plus three ready adapters
+  slu/                    System One: understanding without transcribing
+    schema.py               the typed contract: Schema, Decision, the core intents
+    encoder.py              audio -> pooled vector (parakeet | whisper | logmel)
+    student.py              the classifier heads, training, calibration
+    router.py               probabilities -> act | ignore | escalate
+    system_one.py           the runtime fast path
+    teacher.py              System Two, and the offline teacher built from it
+    parse.py                transcript -> intent and slots
+    corpus.py, data.py      scripted lines, TTS, augmentation, public corpora
+    collect.py              guided, consented session (keeps vectors, not audio)
+    training.py, bench.py   python -m juno_core.slu: train, evaluate, benchmark
+  stt/                    speech-to-text: the interface, plus four ready adapters
   llm/                    the BYOK language-model interface and four adapters
   tts/                     optional text-to-speech interface and two adapters
   pipeline.py               wires all of the above into one running loop
@@ -509,7 +715,9 @@ run.py            the entry point — start here
 enroll.py         optional voice enrolment
 tests/            python -m unittest discover tests
 examples/
-  connect_an_agent.py   how to hook in your own agent instead of a plain reply
+  connect_an_agent.py   how to hook in your own agent: the text seam and the typed one
+docs/
+  system-one-experiments.md   how to test System One and write up the results
 config.example.yaml    copy to config.yaml
 .env.example            copy to .env
 REPORT.txt              the full technical writeup the numbers above are from
@@ -532,7 +740,8 @@ SHA-256 checksum:
 |---|---|---|---|
 | Silero VAD v6.2.2, Silero Team | voice activity detection | MIT | [snakers4/silero-vad](https://github.com/snakers4/silero-vad) |
 | WeSpeaker ECAPA-TDNN512-LM, WeSpeaker team, trained on VoxCeleb | speaker verification (`enroll.py`) | CC BY 4.0 | [Wespeaker/wespeaker-ecapa-tdnn512-LM](https://huggingface.co/Wespeaker/wespeaker-ecapa-tdnn512-LM) |
-| OpenAI Whisper (via `mlx-community` or `Systran` conversions) | speech-to-text, if you pick a local engine | MIT | downloaded by `mlx-whisper` / `faster-whisper` |
+| OpenAI Whisper (via `mlx-community` or `Systran` conversions) | speech-to-text, if you pick a local engine; optionally System One's encoder | MIT | downloaded by `mlx-whisper` / `faster-whisper` |
+| NVIDIA Parakeet TDT-CTC 110M / TDT 0.6B (via `mlx-community`) | speech-to-text (`parakeet`); System One's default encoder | CC BY 4.0 | downloaded by `parakeet-mlx` |
 
 If you redistribute any of these, keep their licence and attribution.
 
