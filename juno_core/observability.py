@@ -32,6 +32,8 @@ _FRIENDLY = {
     "transcript_rejected": "couldn't make that out clearly, ignoring it",
     "intent_accepted": "-> that was meant for me ({confidence:.0%} confident)",
     "intent_ignored": "-> not talking to me, staying quiet",
+    "slu_act": "-> understood without transcribing: {summary} ({p:.0%} sure)",
+    "slu_ignore": "(not for me -- dropped without transcribing)",
     "llm_started": "thinking...",
     "llm_finished": "done",
     "error": "something went wrong: {detail}",
@@ -77,6 +79,11 @@ class Observer:
             key = "gate_scored_skip"
         elif name == "gate_scored":
             return  # scored but not skipped: nothing a person needs to see
+        elif name == "slu_decided":
+            # Shadow decisions and escalations change nothing a person sees.
+            if not fields.get("effective") or fields.get("route") == "escalate":
+                return
+            key = f"slu_{fields.get('route')}"
         template = _FRIENDLY.get(key)
         if template is not None:
             try:

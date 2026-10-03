@@ -9,3 +9,8 @@ config.yaml
 
 logs/
 data/
+
+# System One experiments: trained students (often NOT distributable -- see
+# `python -m juno_core.slu sources`) and their reports.
+models/
+reports/
