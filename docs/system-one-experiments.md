@@ -108,6 +108,12 @@ python -m juno_core.slu collect --out data/slu/consented/s1 --speakers p1,p2 \
     --room kitchen --consent release
 ```
 
+Or do step 4 in a browser: `python -m juno_core.slu studio`, then the
+**Collect** tab. Sessions land in `data/slu/studio/` in the same format, and
+the **Results** tab evaluates and trains on them. The studio's **Try it** tab
+is also the quickest qualitative check: speak, and watch System One's
+decision next to System Two's for every utterance.
+
 Nothing writes audio except the TTS engine itself. Augmented copies, AMI
 utterances, and noise clips are recipes in the manifest, rebuilt in memory.
 `collect` keeps encoder vectors and the teacher's labels, never audio.

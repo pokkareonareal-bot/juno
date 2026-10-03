@@ -100,26 +100,44 @@ class SystemOne:
                state: ConversationState | None = None, turn: str | None = None) -> Decision:
         started = time.perf_counter()
         try:
-            t0 = time.perf_counter()
             vector = self.encoder.encode(audio, sample_rate)
-            encode_ms = (time.perf_counter() - t0) * 1000.0
+        except Exception as exc:
+            return self._failed(exc, started, turn)
+        return self.decide_vector(vector, state, turn,
+                                  encode_ms=(time.perf_counter() - started) * 1000.0,
+                                  started=started)
+
+    def decide_vector(self, vector: np.ndarray, state: ConversationState | None = None,
+                      turn: str | None = None, *, encode_ms: float = 0.0,
+                      started: float | None = None) -> Decision:
+        """The same decision from an already-encoded vector (from ``self.encoder``).
+
+        ``started`` is when encoding began, if the caller timed it as part of
+        this decision; otherwise ``encode_ms`` is added to the total."""
+        prior_ms = 0.0
+        if started is None:
+            started, prior_ms = time.perf_counter(), encode_ms
+        try:
             pred = self.model.predict(vector)
             routed = self.router.route(pred, state)
         except Exception as exc:
-            self.counts["error"] += 1
-            return Decision(route="escalate", source="system_one",
-                            addressed=Field("assistant_directed", 0.0), turn=turn,
-                            reason=f"system one failed: {type(exc).__name__}: {exc}",
-                            latency_ms={"system_one": (time.perf_counter() - started) * 1000.0},
-                            model=self.model.tag if self.model else None)
+            return self._failed(exc, started, turn)
         self.counts[routed.route] += 1
         return Decision(
             route=routed.route, source="system_one", addressed=routed.addressed,
             intent=routed.intent, slots=routed.slots, reason=routed.reason, turn=turn,
-            latency_ms={"system_one": (time.perf_counter() - started) * 1000.0,
+            latency_ms={"system_one": prior_ms + (time.perf_counter() - started) * 1000.0,
                         "encoder": encode_ms, "heads": pred.latency_ms},
             model=self.model.tag,
         )
+
+    def _failed(self, exc: Exception, started: float, turn: str | None) -> Decision:
+        self.counts["error"] += 1
+        return Decision(route="escalate", source="system_one",
+                        addressed=Field("assistant_directed", 0.0), turn=turn,
+                        reason=f"system one failed: {type(exc).__name__}: {exc}",
+                        latency_ms={"system_one": (time.perf_counter() - started) * 1000.0},
+                        model=self.model.tag if self.model else None)
 
     def snapshot(self) -> dict:
         return {"mode": self.mode, "error": self.error,

@@ -392,6 +392,31 @@ disagreement that would have mattered. Switch to `on` once you trust it. If
 the model file is missing, unreadable, or trained on another encoder or
 schema, System One switches itself off and Juno runs exactly as before.
 
+### Juno Studio: try it and collect data in a browser
+
+```bash
+python -m juno_core.slu studio
+```
+
+This opens a local page (only on 127.0.0.1) with three tabs:
+
+- **Try it** listens and shows, per utterance, what System One decided from
+  the sound next to what System Two made of the words, with probabilities,
+  latency and agreement. You can mark what each utterance really was and
+  save those marks as a real-world test set.
+- **Collect** runs a guided, consented session: prompt by prompt (give Juno
+  timer commands, talk to each other, play a podcast), each utterance
+  labelled by its prompt. There's also free recording for extra examples,
+  e.g. minimal pairs like "pause" and "unpause".
+- **Results** evaluates a model on the sessions you picked and trains a new
+  one with them.
+
+It uses the same capture, VAD, encoders and teacher as the runtime, and
+keeps the same rule: audio stays in memory. A saved session is encoder
+vectors, what speech-to-text heard, the label, and provenance, under
+`data/slu/studio/`. `--simulate path/to/wavs` plays WAV files instead of
+the microphone.
+
 ### Training a model
 
 ```bash
@@ -704,6 +729,7 @@ juno_core/
     parse.py                transcript -> intent and slots
     corpus.py, data.py      scripted lines, TTS, augmentation, public corpora
     collect.py              guided, consented session (keeps vectors, not audio)
+    studio/                 Juno Studio: the local web page for try / collect / results
     training.py, bench.py   python -m juno_core.slu: train, evaluate, benchmark
   stt/                    speech-to-text: the interface, plus four ready adapters
   llm/                    the BYOK language-model interface and four adapters

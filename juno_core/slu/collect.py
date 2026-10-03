@@ -109,18 +109,47 @@ class SLUCollector(Collector):
         teacher = self.teacher.label(segment.audio, self.rate).as_row()
         for encoder in self.encoders:
             self.vectors[encoder.spec].append(encoder.encode(segment.audio, self.rate))
-        intent = getattr(self._prompt, "intent", None) if label == ASSISTANT else None
-        return {
-            "id": clip_id, "path": None, "g_addressed": label, "g_intent": intent,
-            "g_slots": {}, "category": f"consented_{label}", "source": "consented",
-            "license": "consent", "consent": self.consent, "speaker": speaker or "media",
-            "session": self.session, "room": self.room, "mic": self.mic,
-            "duration": round(float(segment.duration), 3), **teacher,
-        }
+        intent = getattr(self._prompt, "intent", None)
+        return consented_row(clip_id, label, intent, speaker, session=self.session,
+                             room=self.room, mic=self.mic, consent=self.consent,
+                             duration=float(segment.duration), teacher=teacher)
+
+
+def consented_row(clip_id: str, label: str, intent: str | None, speaker: str, *,
+                  session: str, room: str, mic: str, consent: str, duration: float,
+                  teacher: dict, category: str | None = None) -> dict:
+    """One collected utterance: gold label from the prompt, the teacher's
+    answer, provenance. No path, because there is no audio."""
+    return {
+        "id": clip_id, "path": None, "g_addressed": label,
+        "g_intent": intent if label == ASSISTANT else None, "g_slots": {},
+        "category": category or f"consented_{label}", "source": "consented",
+        "license": "consent", "consent": consent, "speaker": speaker or "media",
+        "session": session, "room": room, "mic": mic, "duration": round(duration, 3),
+        **teacher,
+    }
+
+
+def write_session(out: Path, rows: list[dict], vectors: dict[str, list], meta: dict) -> dict:
+    """manifest.jsonl + one vector table per encoder + session.json. No audio."""
+    from juno_core.slu import data as D
+
+    out.mkdir(parents=True, exist_ok=True)
+    D.write_manifest(out / "manifest.jsonl", rows)
+    ids = np.asarray([r["id"] for r in rows])
+    for spec, vecs in vectors.items():
+        np.savez(out / D.table_name(spec), ids=ids, X=np.asarray(vecs, np.float32),
+                 encode_ms=np.zeros(len(ids)), spec=np.asarray(spec))
+    counts: dict = {}
+    for row in rows:
+        counts[row["g_addressed"]] = counts.get(row["g_addressed"], 0) + 1
+    meta = {**meta, "rows": len(rows), "counts": counts, "encoders": list(vectors),
+            "collected_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    (out / "session.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return meta
 
 
 def collect_main(args) -> int:
-    from juno_core.slu import data as D
     from juno_core.slu.encoder import build_encoder
     from juno_core.slu.training import build_teacher
 
@@ -153,22 +182,9 @@ def collect_main(args) -> int:
     if not rows:
         print("nothing collected")
         return 1
-    out.mkdir(parents=True, exist_ok=True)
-    D.write_manifest(out / "manifest.jsonl", rows)
-    ids = np.asarray([r["id"] for r in rows])
-    for encoder in encoders:
-        vecs = np.asarray(collector.vectors[encoder.spec], np.float32)
-        name = encoder.spec.replace("/", "_").replace(":", "__").replace("@", "_")
-        np.savez(out / f"{name}.npz", ids=ids, X=vecs, encode_ms=np.zeros(len(ids)),
-                 spec=np.asarray(encoder.spec))
-    counts: dict = {}
-    for row in rows:
-        counts[row["g_addressed"]] = counts.get(row["g_addressed"], 0) + 1
-    (out / "session.json").write_text(json.dumps({
+    meta = write_session(out, rows, collector.vectors, {
         "session": session, "room": args.room, "mic": mic, "consent": args.consent,
-        "speakers": args.speakers, "rows": len(rows), "counts": counts,
-        "encoders": [e.spec for e in encoders], "collected_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-    }, indent=2), encoding="utf-8")
-    print(f"\nwrote {len(rows)} rows and {len(encoders)} vector tables to {out} {counts}; "
-          f"no audio was saved")
+        "speakers": args.speakers})
+    print(f"\nwrote {len(rows)} rows and {len(encoders)} vector tables to {out} "
+          f"{meta['counts']}; no audio was saved")
     return 0

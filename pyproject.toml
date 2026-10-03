@@ -40,3 +40,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["juno_core*"]
+
+[tool.setuptools.package-data]
+"juno_core.slu.studio" = ["static/*"]

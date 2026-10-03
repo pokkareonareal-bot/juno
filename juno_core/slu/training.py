@@ -17,6 +17,7 @@
                                      --room kitchen --consent release
     python -m juno_core.slu bench    --rows test.jsonl --model model.npz --baselines ...
     python -m juno_core.slu shadow   --log logs/events.jsonl
+    python -m juno_core.slu studio                                  # the same, in a browser
 
 THE PIPELINE
 ------------
@@ -126,7 +127,13 @@ def truth(row: dict, mode: str = "auto") -> tuple[str | None, str | None, dict]:
     """(addressed, intent, slots) to judge against: gold if known, else teacher."""
     use_gold = mode == "gold" or (mode == "auto" and row.get("g_addressed"))
     if use_gold:
-        return row.get("g_addressed"), row.get("g_intent"), row.get("g_slots") or {}
+        addressed, intent = row.get("g_addressed"), row.get("g_intent")
+        slots = row.get("g_slots") or {}
+        # A prompt can fix WHO without fixing WHAT ("give Juno any command"):
+        # in auto mode the teacher fills in the intent the gold label lacks.
+        if mode == "auto" and addressed == ASSISTANT and not intent and row.get("t_intent"):
+            intent, slots = row.get("t_intent"), row.get("t_slots") or {}
+        return addressed, intent, slots
     if not row.get("t_addressed"):
         return None, None, {}
     addressed = ASSISTANT if row.get("t_accept") else (
@@ -587,8 +594,7 @@ def _cmd_embed(args) -> int:
             ids.append(row["id"])
             if k % 500 == 0:
                 _log(f"  {encoder.spec}: {k}/{len(rows)}")
-        name = encoder.spec.replace("/", "_").replace(":", "__").replace("@", "_")
-        path = out_dir / f"{name}.npz"
+        path = out_dir / D.table_name(encoder.spec)
         np.savez(path, ids=np.asarray(ids), X=np.asarray(vecs, np.float32),
                  encode_ms=np.asarray(ms), spec=np.asarray(encoder.spec))
         _log(f"wrote {path}  ({len(ids)} vectors, dim {len(vecs[0])}, "
@@ -827,6 +833,12 @@ def _cmd_collect(args) -> int:
     return collect_main(args)
 
 
+def _cmd_studio(args) -> int:
+    from juno_core.slu.studio.server import studio_main
+
+    return studio_main(args)
+
+
 def _cmd_bench(args) -> int:
     from juno_core.slu.bench import bench_main
 
@@ -973,6 +985,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     s.add_argument("--config")
     s.add_argument("--scale", type=float, default=1.0)
 
+    s = sub.add_parser("studio", help="a local web page to try System One and collect data")
+    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--stt", default="parakeet-0.6b", help="System Two's recogniser")
+    s.add_argument("--model", help="student to load (default: the newest in models/)")
+    s.add_argument("--encoder", nargs="+", help="encoders to keep vectors from "
+                                               "(default: parakeet logmel gate)")
+    s.add_argument("--simulate", nargs="+", help="WAV files or folders to play instead of the mic")
+    s.add_argument("--no-browser", action="store_true")
+    s.add_argument("--config")
+    s.add_argument("--aliases")
+    s.add_argument("--name", default="Juno")
+
     s = sub.add_parser("bench", help="live benchmark: System One vs always-transcribe baselines")
     from juno_core.slu.bench import add_bench_args
 
@@ -986,7 +1010,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "import-ami": _cmd_import_ami, "import-speech-commands": _cmd_import_sc,
             "label": _cmd_label, "embed": _cmd_embed, "train": _cmd_train,
             "evaluate": _cmd_evaluate, "sweep": _cmd_sweep, "collect": _cmd_collect,
-            "bench": _cmd_bench,
+            "studio": _cmd_studio, "bench": _cmd_bench,
             "shadow": _cmd_shadow}[args.cmd](args)
 
 
