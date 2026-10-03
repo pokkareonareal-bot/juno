@@ -203,7 +203,7 @@ def studio_main(args) -> int:
         aliases = list((config.get("intent") or {}).get("assistant_aliases") or [])
     studio = Studio(config, root=Path.cwd(), stt=args.stt, aliases=aliases, name=args.name,
                     encoders=args.encoder or DEFAULT_ENCODERS, model=args.model,
-                    simulate=args.simulate)
+                    simulate=args.simulate, judge=args.judge)
     studio.load(background=True)
     server = make_server(studio, port=args.port)
     url = f"http://127.0.0.1:{server.server_address[1]}/"

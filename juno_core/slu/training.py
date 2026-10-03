@@ -7,6 +7,8 @@
     python -m juno_core.slu import-speech-commands --out data/slu/real
     python -m juno_core.slu label    --manifest data/slu/syn/manifest.jsonl ... \\
                                      --out data/slu/labelled.jsonl --stt parakeet-0.6b
+    python -m juno_core.slu relabel  --rows data/slu/labelled.jsonl --judge mlx \
+                                     --out data/slu/judged.jsonl     # a better teacher
     python -m juno_core.slu embed    --rows data/slu/labelled.jsonl --encoder parakeet \\
                                      --out data/slu/emb
     python -m juno_core.slu train    --rows data/slu/labelled.jsonl \\
@@ -523,23 +525,33 @@ def _cmd_import_sc(args) -> int:
     return 0
 
 
-def build_teacher(args):
+def build_teacher(args, stt=True):
     from juno_core.slu.teacher import Teacher
     from juno_core.stt import build_stt
 
     name = args.stt
-    if name.startswith("parakeet"):
+    if not stt:
+        stt = None
+    elif name.startswith("parakeet"):
         stt = build_stt({"provider": "parakeet", "model": name})
     elif name.startswith("whisper:"):
         stt = build_stt({"provider": "mlx_whisper", "model": name.split(":", 1)[1]})
     else:
         raise SystemExit("--stt is parakeet-110m | parakeet-0.6b | whisper:<model>")
+    stt_name = stt.name if stt is not None else "stored transcripts"
     model = None
     if args.llm:
         from juno_core.llm import build_model
 
         model = build_model({"provider": args.llm})
     schema = Schema.load(args.schema) if getattr(args, "schema", None) else CORE_SCHEMA
+    judge = None
+    if getattr(args, "judge", None):
+        from juno_core.slu.judge import build_judge
+
+        aliases = tuple(a.strip() for a in (getattr(args, "aliases", None) or "").split(",")
+                        if a.strip())
+        judge = build_judge(args.judge, schema, args.name, aliases)
     intent_config = {}
     if getattr(args, "config", None):
         from juno_core.config import load_config
@@ -547,8 +559,10 @@ def build_teacher(args):
         intent_config = (load_config(args.config).get("intent") or {}).to_dict()
     if getattr(args, "aliases", None):
         intent_config["assistant_aliases"] = [a.strip() for a in args.aliases.split(",") if a.strip()]
-    return Teacher(stt, schema=schema, model=model, assistant_name=args.name,
-                   intent_config=intent_config), stt.name
+    teacher = Teacher(stt, schema=schema, model=model, assistant_name=args.name,
+                      intent_config=intent_config, judge=judge,
+                      judge_weight=getattr(args, "judge_weight", 0.8))
+    return teacher, f"{stt_name} | {teacher.name}"
 
 
 def _cmd_label(args) -> int:
@@ -569,6 +583,69 @@ def _cmd_label(args) -> int:
     # Absolute paths: the labelled file usually lives somewhere else.
     n = D.write_manifest(args.out, [D.absolute_paths(row) for row in out])
     _log(f"wrote {n} labelled rows to {args.out}")
+    return 0
+
+
+def _cmd_relabel(args) -> int:
+    """The teacher again, on transcripts already made: only the judging is redone."""
+    rows = D.read_manifest(args.rows)
+    teacher, name = build_teacher(args, stt=False)
+    out, t0 = [], time.time()
+    for k, row in enumerate(rows, 1):
+        if "transcript" not in row:
+            _log(f"  {row.get('id')}: no transcript (run `label` first); skipped")
+            continue
+        label = teacher.judge_text(row.get("transcript") or "",
+                                   reliable=bool(row.get("t_reliable", True)))
+        new = {key: v for key, v in row.items() if not key.startswith("t_")}
+        new.update({**label.as_row(), "stt_ms": row.get("stt_ms"), "teacher": name})
+        out.append(D.absolute_paths(new))
+        if k % 250 == 0:
+            _log(f"  judged {k}/{len(rows)} ({(time.time() - t0) / k * 1000:.0f} ms/row, "
+                 f"repeats answered from memory)")
+    n = D.write_manifest(args.out, out)
+    _log(f"wrote {n} relabelled rows to {args.out} ({name})")
+    return 0
+
+
+def teacher_report(rows: Sequence[dict], weights: Sequence[float] = (0.0, 0.5, 0.8, 1.0)) -> dict:
+    """Each teacher against the gold labels: the old engine (weight 0), the
+    language-model judge (weight 1), and blends -- from the opinions stored
+    at labelling time, so nothing is re-run."""
+    rows = [r for r in rows if r.get("g_addressed") and r.get("t_judge_addressed")]
+    out: dict = {"rows": len(rows), "teachers": {}}
+    for w in weights:
+        name = {0.0: "engine (old teacher)", 1.0: "judge alone"}.get(w, f"blend {w:g} judge")
+        hits, fa, fa_n, miss, miss_n, int_ok, int_n = 0, 0, 0, 0, 0, 0, 0
+        by_cat: dict = defaultdict(lambda: [0, 0])
+        for r in rows:
+            j, e = r["t_judge_addressed"], r["t_engine_addressed"]
+            p = w * j[ASSISTANT] + (1 - w) * e[ASSISTANT]
+            accept = p >= 0.5
+            gold = r["g_addressed"] == ASSISTANT
+            hits += accept == gold
+            by_cat[r.get("category") or "?"][0] += 1
+            by_cat[r.get("category") or "?"][1] += accept == gold
+            if gold:
+                miss_n += 1
+                miss += not accept
+                if accept and r.get("g_intent"):
+                    int_n += 1
+                    int_ok += r.get("t_intent") == r["g_intent"]
+            else:
+                fa_n += 1
+                fa += accept
+        out["teachers"][name] = {
+            "who_for_accuracy": round(hits / len(rows), 4) if rows else None,
+            "missed_requests": _rate(miss, miss_n), "false_activations": _rate(fa, fa_n),
+            "intent_accuracy_when_accepted": round(int_ok / int_n, 4) if int_n else None,
+            "by_category": {k: round(v[1] / v[0], 3) for k, v in sorted(by_cat.items())},
+        }
+    return out
+
+
+def _cmd_teachers(args) -> int:
+    _print(teacher_report(D.read_manifest(args.rows), [float(w) for w in args.weights]))
     return 0
 
 
@@ -852,6 +929,13 @@ def _cmd_shadow(args) -> int:
     return 0
 
 
+def _judge_args(s) -> None:
+    s.add_argument("--judge", help="a language-model teacher: mlx (local Qwen3.5-4B), "
+                                   "mlx:<repo>, or an llm.provider name")
+    s.add_argument("--judge-weight", type=float, default=0.8,
+                   help="how much the judge counts against the engine's verdict (1 = judge only)")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m juno_core.slu",
                                      description="Train and measure System One (audio -> typed decision).")
@@ -897,6 +981,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     s.add_argument("--aliases", help="other spellings the recogniser produces for the name, "
                                      "e.g. Jumo,June -- same as intent.assistant_aliases")
     s.add_argument("--config", help="config.yaml whose intent: section the teacher uses")
+    _judge_args(s)
+
+    s = sub.add_parser("relabel", help="re-judge rows that already have transcripts "
+                                       "(no speech-to-text): e.g. with a better teacher")
+    s.add_argument("--rows", nargs="+", required=True)
+    s.add_argument("--out", required=True)
+    s.add_argument("--stt", default="parakeet-0.6b", help=argparse.SUPPRESS)
+    s.add_argument("--llm", help="adjudicator provider for the engine half")
+    s.add_argument("--schema")
+    s.add_argument("--name", default="Juno")
+    s.add_argument("--aliases")
+    s.add_argument("--config")
+    _judge_args(s)
+
+    s = sub.add_parser("teachers", help="score the old teacher, the judge, and blends "
+                                        "against gold labels (rows from relabel --judge)")
+    s.add_argument("--rows", nargs="+", required=True)
+    s.add_argument("--weights", nargs="+", default=["0", "0.5", "0.8", "1"])
 
     s = sub.add_parser("embed", help="pooled encoder vectors for every clip")
     s.add_argument("--rows", nargs="+", required=True)
@@ -984,6 +1086,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     s.add_argument("--mic")
     s.add_argument("--config")
     s.add_argument("--scale", type=float, default=1.0)
+    _judge_args(s)
 
     s = sub.add_parser("studio", help="a local web page to try System One and collect data")
     s.add_argument("--port", type=int, default=8765)
@@ -992,6 +1095,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     s.add_argument("--encoder", nargs="+", help="encoders to keep vectors from "
                                                "(default: parakeet logmel gate)")
     s.add_argument("--simulate", nargs="+", help="WAV files or folders to play instead of the mic")
+    s.add_argument("--judge", help="give System Two the language-model judge: mlx, mlx:<repo>, "
+                                   "or an llm.provider")
     s.add_argument("--no-browser", action="store_true")
     s.add_argument("--config")
     s.add_argument("--aliases")
@@ -1008,7 +1113,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     return {"sources": _cmd_sources, "schema": _cmd_schema, "synth": _cmd_synth,
             "import-ami": _cmd_import_ami, "import-speech-commands": _cmd_import_sc,
-            "label": _cmd_label, "embed": _cmd_embed, "train": _cmd_train,
+            "label": _cmd_label, "relabel": _cmd_relabel, "teachers": _cmd_teachers,
+            "embed": _cmd_embed, "train": _cmd_train,
             "evaluate": _cmd_evaluate, "sweep": _cmd_sweep, "collect": _cmd_collect,
             "studio": _cmd_studio, "bench": _cmd_bench,
             "shadow": _cmd_shadow}[args.cmd](args)

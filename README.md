@@ -85,6 +85,7 @@ provider in `config.yaml`'s `llm:` section:
 | Anthropic (Claude) | `anthropic` | `ANTHROPIC_API_KEY` | https://console.anthropic.com/settings/keys |
 | Google (Gemini) | `gemini` | `GOOGLE_API_KEY` | https://aistudio.google.com/apikey |
 | Ollama (local, no key, no cloud) | `ollama` | — | https://ollama.com, then `ollama pull llama3.2` |
+| MLX (local on Apple Silicon, no key, no server) | `mlx` | — | `pip install -e ".[mlx-llm]"`; default model Qwen3.5-4B, downloaded once |
 
 Run `python run.py` again. That's the whole setup. Everything past this point
 in the README is what each piece does and how to go further — enrolling your
@@ -425,11 +426,19 @@ python -m juno_core.slu synth   --out data/slu/syn --size 3000 --augment 1 --noi
 python -m juno_core.slu import-ami --out data/slu/real
 python -m juno_core.slu import-speech-commands --out data/slu/real
 python -m juno_core.slu label   --manifest data/slu/syn/manifest.jsonl data/slu/real/*.jsonl \
-                                --out data/slu/labelled.jsonl --stt parakeet-0.6b
+                                --out data/slu/labelled.jsonl --stt parakeet-0.6b --judge mlx
 python -m juno_core.slu embed   --rows data/slu/labelled.jsonl --encoder parakeet --out data/slu/emb
 python -m juno_core.slu train   --rows data/slu/labelled.jsonl --allow-internal --targets gold \
                                 --embeddings data/slu/emb/parakeet__*.npz --out models/s1.npz
 ```
+
+`--judge mlx` makes the teacher better: a local language model (Qwen3.5-4B
+via mlx-lm, offline, no key) asked, for every clip, who it was for and what
+was wanted, multiple choice. Its answer is read as probabilities from the
+model's next-token odds, not as text it writes. Already-labelled clips can be
+re-judged without re-running speech-to-text (`relabel --judge mlx`), and
+`python -m juno_core.slu teachers` scores the old teacher, the judge and
+blends against the gold labels.
 
 `synth` voices a scripted corpus with macOS `say`. Apple's licence makes
 models trained on that audio **not distributable**, which is why
@@ -474,9 +483,15 @@ What that says:
   teacher.** Heard cold, with no conversation and no language-model second
   opinion, System Two misses about half of short commands and open requests
   (its own end-to-end accuracy on the held-out clips is 67%), and the student
-  inherits that.
-  Mixing in gold labels fixes most of it. A stronger teacher (`label --llm`,
-  a bigger recogniser) is the obvious next experiment.
+  inherits that. Mixing in gold labels fixes most of it.
+- **A better teacher helps, but doesn't close the gap yet.** The language-model
+  judge (below) is right about who an utterance was for 75% of the time
+  (the old teacher: 70%), misses 42% of requests instead of 50%, and its
+  false activations fall from 5.7% to 3.9%. A student distilled from it alone
+  now skips STT on 8% of clips (was 1%), and with gold labels mixed in, 40%
+  (was 34%). What still limits it is the words: on these clips speech
+  recognition often loses or garbles the name, and a bare "louder" is
+  honestly ambiguous from text.
 - **Simple commands go; details escalate.** Timer lengths were right only
   about a quarter of the time from audio alone, so the router escalated
   nearly all of them, as designed.

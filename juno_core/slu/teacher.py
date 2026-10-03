@@ -102,21 +102,37 @@ class TeacherLabel:
     slots: dict[str, Any] = field(default_factory=dict)
     stt_ms: float = 0.0
     text_ms: float = 0.0
+    intent_probs: dict[str, float] | None = None     # the judge's full distribution
+    teacher: str = "engine"
+    extra: dict = field(default_factory=dict)        # the separate opinions, when blended
 
     def as_row(self) -> dict:
-        return {
+        row = {
             "transcript": self.transcript, "t_reliable": self.reliable,
             "t_accept": self.accepted, "t_confidence": round(self.confidence, 4),
             "t_method": self.method,
             "t_addressed": {k: round(v, 4) for k, v in self.addressed.items()},
             "t_intent": self.intent, "t_intent_p": round(self.intent_p, 4),
             "t_slots": self.slots, "stt_ms": round(self.stt_ms, 2),
-            "text_ms": round(self.text_ms, 3),
+            "text_ms": round(self.text_ms, 3), "t_teacher": self.teacher,
         }
+        if self.intent_probs:
+            row["t_intent_probs"] = {k: round(v, 4) for k, v in self.intent_probs.items()}
+        row.update(self.extra)
+        return row
 
 
 class Teacher:
-    """STT + intent engine + parser, run cold on one clip at a time.
+    """STT, then the words judged: run cold on one clip at a time.
+
+    Two ways to judge the words:
+
+      engine  the runtime's intent engine and parser, exactly as System Two
+              runs them (the first teacher -- conservative when cold);
+      judge   a language model asked who it was for and what was wanted, as
+              probabilities (judge.py), blended with the engine's verdict by
+              ``judge_weight`` (1.0 = the judge alone). The parser still
+              decides what it parses exactly, and every slot value.
 
     Each clip is judged with a fresh conversation context: offline clips have
     no honest conversational history, and borrowing the previous clip's
@@ -124,40 +140,97 @@ class Teacher:
     """
 
     def __init__(self, stt, *, intent_config=None, schema: Schema = CORE_SCHEMA,
-                 assistant_name: str = "Juno", model=None) -> None:
+                 assistant_name: str = "Juno", model=None, judge=None,
+                 judge_weight: float = 0.8) -> None:
         self.stt = stt
         self.intent_config = intent_config or {}
         self.model = model
         self.assistant_name = assistant_name
+        self.judge = judge
+        self.judge_weight = float(judge_weight)
         aliases = self.intent_config.get("assistant_aliases") or ()
         self.system_two = SystemTwo(schema or CORE_SCHEMA, assistant_name, model, aliases)
+
+    @property
+    def name(self) -> str:
+        if self.judge is None:
+            return "engine"
+        return f"{self.judge.tag}x{self.judge_weight:g}+engine"
 
     def label(self, audio, sample_rate: int = 16000) -> TeacherLabel:
         t0 = time.perf_counter()
         transcript = self.stt.transcribe(audio, sample_rate)
         stt_ms = (time.perf_counter() - t0) * 1000.0
         text = transcript.text.strip() if transcript else ""
+        out = self.judge_text(text, reliable=bool(transcript and transcript.reliable),
+                              tail_reliable=bool(transcript and transcript.tail_reliable))
+        out.stt_ms = stt_ms
+        return out
+
+    def judge_text(self, text: str, reliable: bool = True,
+                   tail_reliable: bool = True) -> TeacherLabel:
+        """The teacher's answer for a transcript (``relabel`` uses this directly)."""
         t1 = time.perf_counter()
         verdict = None
         if text:
             engine = IntentEngine(self.intent_config, ConversationContext(), model=self.model,
                                   assistant_name=self.assistant_name)
-            verdict = engine.classify(text, reliable=transcript.reliable,
-                                      tail_reliable=transcript.tail_reliable)
-        decision = self.system_two.decide(text, verdict, reliable=bool(transcript and transcript.reliable))
+            verdict = engine.classify(text, reliable=reliable, tail_reliable=tail_reliable)
+        decision = self.system_two.decide(text, verdict, reliable=reliable)
         # The intent head is taught on what the words say whether or not the
         # engine accepted them -- build_targets masks by p(assistant) later.
         parsed = self.system_two.parser.parse(text) if text else None
-        text_ms = (time.perf_counter() - t1) * 1000.0
+        addressed = dict(decision.addressed.probs or {})
+        intent = parsed.intent if parsed else None
+        intent_p = float(parsed.p) if parsed else 0.0
+        slots = dict(parsed.slots) if parsed else {}
+        intent_probs = None
+        method = verdict.method if verdict else "no_transcript"
+
+        extra: dict = {}
+        if self.judge is not None and text:
+            j = self.judge.judge(text)
+            w = self.judge_weight
+            # Both opinions are kept, so other blends can be measured later
+            # without asking the model again.
+            extra = {"t_engine_addressed": {k: round(v, 4) for k, v in addressed.items()},
+                     "t_judge_addressed": {k: round(v, 4) for k, v in j.addressed.items()}}
+            addressed = {a: w * j.addressed[a] + (1 - w) * addressed.get(a, 0.0) for a in ADDRESSEES}
+            if verdict is not None and verdict.method in ("named", "retry"):
+                # The engine heard the name said TO the assistant (a vocative,
+                # not a mention): at runtime that settles it, so it does here.
+                addressed = {ASSISTANT: 0.98, "human_directed": 0.01,
+                             "background_or_media": 0.01}
+            method = f"judge+{method}"
+            if j.intent:
+                intent_probs = dict(j.intent)
+                top = max(j.intent, key=j.intent.get)
+                exact = parsed is not None and parsed.method in ("rule", "example") \
+                    and parsed.intent != OPEN_REQUEST
+                if exact:
+                    # The rules parsed it exactly: that intent, with the judge's
+                    # distribution sharpened onto it.
+                    intent_probs = {k: 0.1 * v for k, v in intent_probs.items()}
+                    intent_probs[intent] = intent_probs.get(intent, 0.0) + 0.9
+                else:
+                    spec = self.system_two.schema.intent(top)
+                    needs = [s.name for s in spec.slots if s.required] if spec else []
+                    if spec is not None and not any(n not in slots for n in needs):
+                        intent, intent_p = top, float(j.intent[top])
+                    else:
+                        # A timer with no length the parser could read is not
+                        # a typed request: the words are needed.
+                        intent, intent_p = OPEN_REQUEST, float(j.intent.get(OPEN_REQUEST, 0.0))
+                        intent_probs = None
+                        slots = {}
+            accepted = addressed[ASSISTANT] >= 0.5
+            confidence = addressed[ASSISTANT]
+        else:
+            accepted = decision.route == "act"
+            confidence = float(verdict.confidence) if verdict else 0.0
         return TeacherLabel(
-            transcript=text,
-            reliable=bool(transcript and transcript.reliable),
-            accepted=decision.route == "act",
-            confidence=float(verdict.confidence) if verdict else 0.0,
-            method=verdict.method if verdict else "no_transcript",
-            addressed=dict(decision.addressed.probs or {}),
-            intent=parsed.intent if parsed else None,
-            intent_p=float(parsed.p) if parsed else 0.0,
-            slots=dict(parsed.slots) if parsed else {},
-            stt_ms=stt_ms, text_ms=text_ms,
+            transcript=text, reliable=reliable, accepted=accepted, confidence=confidence,
+            method=method, addressed=addressed, intent=intent, intent_p=intent_p, slots=slots,
+            text_ms=(time.perf_counter() - t1) * 1000.0, intent_probs=intent_probs,
+            teacher=self.name, extra=extra,
         )

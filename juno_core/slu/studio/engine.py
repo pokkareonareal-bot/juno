@@ -218,13 +218,14 @@ class Studio:
                  aliases: Sequence[str] = (), name: str = "Juno",
                  encoders: Sequence[str] = DEFAULT_ENCODERS, model: str | None = None,
                  simulate: Sequence | None = None, realtime: bool = True,
-                 teacher=None) -> None:
+                 teacher=None, judge: str | None = None) -> None:
         self.config = config
         self.root = Path(root).resolve()
         self.models_dir = self.root / "models"
         self.data_dir = self.root / "data" / "slu"
         self.out_dir = self.data_dir / "studio"
         self.stt_name = stt
+        self.judge_spec = judge
         self.aliases = list(aliases)
         self.name = name
         self.encoder_specs = list(encoders)
@@ -270,7 +271,7 @@ class Studio:
                 "listening": self.listening, "purpose": self.purpose,
                 "simulated": bool(self.simulate),
                 "mic": self._mic_name(),
-                "teacher": self.stt_name,
+                "teacher": self.stt_name + (" + judge" if self.judge_spec else ""),
                 "encoders": list(self.encoders),
                 "model": self.model_info,
                 "state": dict(self.state),
@@ -338,7 +339,8 @@ class Studio:
 
         def teacher():
             args = Namespace(stt=self.stt_name, llm=None, schema=None, name=self.name,
-                             aliases=",".join(self.aliases), config=None)
+                             aliases=",".join(self.aliases), config=None,
+                             judge=self.judge_spec, judge_weight=0.8)
             t, _ = build_teacher(args)
             t.stt.warmup()
             self.teacher = t

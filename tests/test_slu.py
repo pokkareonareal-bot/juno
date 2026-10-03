@@ -517,3 +517,72 @@ class Collect(unittest.TestCase):
             if r["g_addressed"] != ASSISTANT:
                 self.assertIsNone(r["g_intent"])
         self.assertIn("timer.set", {r["g_intent"] for r in rows})
+
+
+class BetterTeacher(unittest.TestCase):
+    """The language-model judge, with a scripted backend standing in for the model."""
+
+    class Scripted:
+        name = "scripted"
+
+        def __init__(self, who, intent_letter=None):
+            self.who, self.intent_letter, self.calls = who, intent_letter, 0
+
+        def choose(self, system, question, item, n):
+            self.calls += 1
+            p = np.full(n, 0.01)
+            letter = self.who if n == 3 else (self.intent_letter or "A")
+            p["ABCDEFGHIJKLM".index(letter)] = 1.0
+            return p / p.sum()
+
+    def teacher(self, backend, weight=1.0):
+        from juno_core.slu.judge import LLMJudge
+        from juno_core.slu.teacher import Teacher
+
+        return Teacher(None, judge=LLMJudge(backend), judge_weight=weight)
+
+    def test_judge_overrules_a_cold_engine_on_who(self):
+        # "a little louder" heard cold: the engine rejects it; the judge says Juno.
+        intents = [i.name for i in CORE_SCHEMA.intents if i.name != OPEN_REQUEST]
+        letter = "ABCDEFGHIJKLM"[intents.index("volume.up")]
+        label = self.teacher(self.Scripted("A", letter)).judge_text("a little louder")
+        self.assertTrue(label.accepted)
+        self.assertEqual(label.intent, "volume.up")
+        row = label.as_row()
+        self.assertGreater(row["t_judge_addressed"][ASSISTANT], 0.9)
+        self.assertLess(row["t_engine_addressed"][ASSISTANT], 0.5)
+        self.assertAlmostEqual(sum(row["t_intent_probs"].values()), 1.0, places=3)
+
+    def test_rules_keep_exact_parses_and_slots(self):
+        # The judge points at stop; the parser read a timer with a length -- rules win.
+        label = self.teacher(self.Scripted("A", "A")).judge_text("set a timer for 7 minutes")
+        self.assertEqual((label.intent, label.slots), ("timer.set", {"duration": 420}))
+        self.assertGreater(label.intent_probs["timer.set"], 0.85)
+
+    def test_timer_without_a_length_stays_open(self):
+        intents = [i.name for i in CORE_SCHEMA.intents if i.name != OPEN_REQUEST]
+        letter = "ABCDEFGHIJKLM"[intents.index("timer.set")]
+        label = self.teacher(self.Scripted("A", letter)).judge_text("could you time my eggs")
+        self.assertEqual(label.intent, OPEN_REQUEST)
+
+    def test_not_for_juno_skips_the_intent_question_and_repeats_are_free(self):
+        backend = self.Scripted("B")
+        t = self.teacher(backend)
+        a = t.judge_text("did you feed the cat")
+        t.judge_text("Did you feed the cat")
+        self.assertFalse(a.accepted)
+        self.assertEqual(backend.calls, 1)              # one question, asked once
+
+    def test_blend_weight(self):
+        label = self.teacher(self.Scripted("A"), weight=0.5).judge_text("a little louder")
+        row = label.as_row()
+        expected = 0.5 * row["t_judge_addressed"][ASSISTANT] + 0.5 * row["t_engine_addressed"][ASSISTANT]
+        self.assertAlmostEqual(row["t_addressed"][ASSISTANT], expected, places=3)
+
+    def test_soft_intent_targets_reach_training(self):
+        rows, _ = toy_rows(6)
+        rows[0]["t_intent_probs"] = {"stop": 0.7, "cancel": 0.3}
+        T = build_targets(rows, CORE_SCHEMA, "teacher")
+        names = list(CORE_SCHEMA.intent_names)
+        self.assertAlmostEqual(float(T.intent[0][names.index("stop")]), 0.7, places=5)
+        self.assertAlmostEqual(float(T.intent[0][names.index("cancel")]), 0.3, places=5)

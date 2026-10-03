@@ -131,6 +131,7 @@ llm:
   provider: echo                    # echo (no key, repeats the question back -- so
                                      # `python run.py` works before you've configured
                                      # anything) | openai | anthropic | gemini | ollama
+                                     # | mlx (local on Apple Silicon, no key, no server)
   model: null                       # null uses each provider's documented default --
                                      # see README.md, "Bringing your own model", for
                                      # what that is and how to override it
