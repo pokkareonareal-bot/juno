@@ -3,30 +3,46 @@
 
     python examples/connect_an_agent.py     (needs config.yaml + .env, same as run.py)
 
-juno_core.pipeline.JunoPipeline calls exactly one function once it has
-decided an utterance was meant for you:
+There are two seams. Use whichever fits your agent.
 
-    on_accept(text: str, decision: IntentDecision, context: ConversationContext) -> str | None
+1. TEXT -- the original one. Once Juno decides an utterance was meant for
+   you, it calls
 
-Everything upstream of that call is the addressee-detection technology this
-package ships -- deciding WHETHER you were being spoken to, with no wake
-word. Everything downstream of it is yours: call a language model once, run
-a tool-calling loop, call out to LangChain / AutoGen / a framework you
-already have, or -- as below -- do something on the device directly and only
-reach for a language model when nothing more specific matches.
+       on_accept(text: str, decision: IntentDecision, context) -> str | None
 
-This example adds two tiny actions (say the time, open a site in the default
-browser) and falls back to whatever `llm.provider` is configured in
-config.yaml for everything else. It's deliberately small -- the point is the
-shape of the seam, not a tool-calling framework. Wire in a real one the same
-way: replace the body of `my_agent` and leave the rest of this file alone.
+2. TYPED -- the System One one. Your agent DECLARES what it can do (a schema
+   of intents with typed slots), and Juno calls
+
+       on_decision(decision: Decision, context) -> str | None
+
+   for every utterance meant for you, answered in that schema:
+
+       {"route": "act", "source": "system_one",
+        "addressed": {"value": "assistant_directed", "p": 0.97},
+        "intent": {"value": "lights.off", "p": 0.93}, "slots": {},
+        "transcript": null}
+
+   ``source`` says how it was decided. "system_one" means from the audio
+   alone, with no transcription (``transcript`` is null); "system_two" means
+   speech-to-text ran and ``transcript`` holds the words. The shape is the
+   same either way, so your agent has one code path.
+
+   An agent's own intents are understood by System Two straight away (from
+   their examples, or by your language model if one is configured). System
+   One only knows the intents it was trained on, and an utterance it has no
+   class for could land in the wrong one -- so given a schema with intents
+   its model lacks, it switches itself off (and says why) until it is
+   retrained on the extended schema (README, "System One"). System Two keeps
+   answering in your schema meanwhile.
+
+This example declares two intents of its own on top of the core ones, and
+handles a few things locally. Everything else goes to whatever llm.provider
+is configured.
 """
 
 from __future__ import annotations
 
-import re
 import sys
-import webbrowser
 from datetime import datetime
 from pathlib import Path
 
@@ -34,42 +50,45 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from juno_core.intelligence.context import ConversationContext  # noqa: E402
-from juno_core.intelligence.intent import IntentDecision  # noqa: E402
+from juno_core.slu.schema import CORE_SCHEMA, Decision, Schema  # noqa: E402
 
-_TIME = re.compile(r"what(?:'s| is) the time|what time is it", re.IGNORECASE)
-_OPEN = re.compile(r"\bopen\s+([a-z0-9.-]+\.[a-z]{2,})\b", re.IGNORECASE)
+# What this agent can do, beyond the core intents. Write it in JSON if you
+# prefer -- `python -m juno_core.slu schema --out my_schema.json` prints the
+# core one to start from.
+MY_SCHEMA = CORE_SCHEMA.extend(Schema.from_dict({
+    "name": "example-agent",
+    "intents": [
+        {"name": "lights.off", "description": "turn the lights off",
+         "examples": ["lights off", "turn off the lights", "turn the lights off"],
+         "min_confidence": 0.95},
+        {"name": "lights.set", "description": "set the lights to a level",
+         "examples": ["set the lights to {level}", "lights {level}", "make it {level}"],
+         "slots": [{"name": "level", "type": "enum", "values": ["dim", "medium", "bright"]}]},
+    ],
+}))
 
 
-def my_agent(text: str, decision: IntentDecision, context: ConversationContext,
-             *, model) -> str:
-    """The whole seam, in one function.
+def my_agent(decision: Decision, context: ConversationContext, *, model) -> str | None:
+    """The whole typed seam, in one function."""
+    intent = decision.intent.value if decision.intent else None
+    slots = {name: f.value for name, f in decision.slots.items()}
 
-    `text` -- what Juno decided was meant for it.
-    `decision` -- how confident it was, and why (see IntentDecision).
-    `context` -- the conversation so far; `context.messages()` renders it in
-      the [{"role": ..., "content": ...}] shape every chat API expects.
-    `model` -- whatever `llm.provider` is configured (juno_core.llm). Swap
-      this parameter for your own agent's entry point and this function is
-      the entire integration.
-    """
-    if _TIME.search(text):
+    if intent == "time.now":
         return f"It's {datetime.now().strftime('%H:%M')}."
+    if intent == "lights.off":
+        return "Lights off."                      # call your smart-home API here
+    if intent == "lights.set":
+        return f"Lights to {slots['level']}."
 
-    match = _OPEN.search(text)
-    if match:
-        site = match.group(1)
-        webbrowser.open(f"https://{site}")
-        return f"Opening {site}."
-
-    # Not one of ours -- fall back to the configured language model, same as
-    # JunoPipeline's own default would.
-    messages = [
-        {"role": "system", "content": "You are a spoken voice assistant. "
-                                       "Answer in one short sentence -- this "
-                                       "is read aloud, not read on a screen."},
-        *context.messages(turns=6),
-    ]
-    return model.complete(messages, max_tokens=150)
+    # Open-ended: there is a transcript (System Two ran). Ask the model.
+    if decision.transcript:
+        messages = [
+            {"role": "system", "content": "You are a spoken voice assistant. Answer "
+                                           "in one short sentence -- this is read aloud."},
+            *context.messages(turns=6),
+        ]
+        return model.complete(messages, max_tokens=150)
+    return None
 
 
 def main() -> None:
@@ -85,13 +104,14 @@ def main() -> None:
     observer = Observer(log_path=ROOT / "logs" / "events.jsonl")
 
     pipeline = JunoPipeline(
-        config, stt=stt, model=model, observer=observer,
-        on_accept=lambda text, decision, context: my_agent(
-            text, decision, context, model=model),
+        config, stt=stt, model=model, observer=observer, schema=MY_SCHEMA,
+        on_decision=lambda decision, context: my_agent(decision, context, model=model),
     )
+    if pipeline.system_one.error:
+        print(f"(System One off: {pipeline.system_one.error})")
 
-    print("Connected a two-action example agent.")
-    print('Try: "what time is it", "open wikipedia.org", or anything else.\n')
+    print("Connected an example agent with two intents of its own.")
+    print('Try: "lights off", "set the lights to dim", "what time is it", or anything else.\n')
     try:
         pipeline.run_forever()
     except KeyboardInterrupt:

@@ -34,6 +34,53 @@ def load_dotenv(path: Path) -> None:
             os.environ.setdefault(key, value)
 
 
+class CoreActions:
+    """The core schema's intents, done locally. A reference, not a product:
+    replace any branch with the real thing (your media player, your timers)."""
+
+    def __init__(self, pipeline) -> None:
+        self.pipeline = pipeline
+        self.timer = None
+
+    def handle(self, decision, context) -> str | None:
+        """A reply, "" for handled-and-silent, or None for "not mine"."""
+        import threading
+        from datetime import datetime
+
+        from juno_core.slu.schema import describe_duration
+
+        intent = decision.intent.value if decision.intent else None
+        slots = {k: v.value for k, v in decision.slots.items()}
+        if intent == "time.now":
+            return f"It's {datetime.now().strftime('%H:%M')}."
+        if intent == "timer.set" and "duration" in slots:
+            if self.timer is not None:
+                self.timer.cancel()
+            seconds = int(slots["duration"])
+
+            def ring():
+                self.pipeline.active_contexts.discard("timer_running")
+                print(f"\n  ** timer done ({describe_duration(seconds)}) **\n")
+
+            self.timer = threading.Timer(seconds, ring)
+            self.timer.daemon = True
+            self.timer.start()
+            self.pipeline.active_contexts.add("timer_running")
+            return f"Timer set for {describe_duration(seconds)}."
+        if intent == "timer.cancel" and self.timer is not None:
+            self.timer.cancel()
+            self.timer = None
+            self.pipeline.active_contexts.discard("timer_running")
+            return "Timer cancelled."
+        if intent == "repeat":
+            return context.last_ai_text or "I haven't said anything yet."
+        if intent in ("stop", "cancel"):
+            return "" if intent == "stop" else "Okay."       # "" = handled, say nothing
+        if intent in ("volume.up", "volume.down", "media.pause", "media.resume"):
+            return f"({intent} -- wire this to your player)"
+        return None
+
+
 def banner(assistant_name: str, stt_name: str, llm_name: str, tts_name: str | None) -> None:
     print("=" * 64)
     print(f"  {assistant_name} is listening. No wake word -- just talk.")
@@ -105,6 +152,33 @@ def main() -> None:
         return reply
 
     pipeline.on_accept = on_accept
+
+    if pipeline.system_one.enabled:
+        # Typed decisions, from either system. System One's arrive with no
+        # transcript at all -- the core intents are handled right here, with
+        # no speech-to-text and no language model; anything open-ended came
+        # through System Two and goes to the model as before.
+        actions = CoreActions(pipeline)
+
+        def on_decision(decision, context):
+            heard = decision.transcript or f"(no transcript) {decision.summary()}"
+            print(f"\n  you said : {heard}   [{decision.source}]")
+            reply = actions.handle(decision, context)
+            if reply is None and decision.transcript:
+                reply = pipeline.answer_with_model(decision.transcript, decision.detail, context)
+            if reply:
+                print(f"  answer   : {reply}\n")
+                if tts is not None:
+                    try:
+                        tts.speak(reply)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"  (couldn't speak that: {exc})")
+            return reply
+
+        pipeline.on_decision = on_decision
+        print(f"System One: {pipeline.system_one.mode} ({pipeline.system_one.model.tag})")
+    elif pipeline.system_one.error:
+        print(f"(System One unavailable, running as before: {pipeline.system_one.error})")
 
     banner(pipeline.assistant_name, stt.name, model.name if model else "nothing",
            tts.name if tts else None)
