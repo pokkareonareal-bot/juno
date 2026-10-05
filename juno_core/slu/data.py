@@ -163,6 +163,11 @@ def provenance(rows: Sequence[dict]) -> dict:
 
 # -- manifests ---------------------------------------------------------------
 
+def table_name(spec: str) -> str:
+    """The vector-table file name for an encoder spec, wherever one is written."""
+    return spec.replace("/", "_").replace(":", "__").replace("@", "_") + ".npz"
+
+
 def write_manifest(path: str | Path, rows: Iterable[dict]) -> int:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

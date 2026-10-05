@@ -85,6 +85,7 @@ provider in `config.yaml`'s `llm:` section:
 | Anthropic (Claude) | `anthropic` | `ANTHROPIC_API_KEY` | https://console.anthropic.com/settings/keys |
 | Google (Gemini) | `gemini` | `GOOGLE_API_KEY` | https://aistudio.google.com/apikey |
 | Ollama (local, no key, no cloud) | `ollama` | — | https://ollama.com, then `ollama pull llama3.2` |
+| MLX (local on Apple Silicon, no key, no server) | `mlx` | — | `pip install -e ".[mlx-llm]"`; default model Qwen3.5-4B, downloaded once |
 
 Run `python run.py` again. That's the whole setup. Everything past this point
 in the README is what each piece does and how to go further — enrolling your
@@ -392,6 +393,31 @@ disagreement that would have mattered. Switch to `on` once you trust it. If
 the model file is missing, unreadable, or trained on another encoder or
 schema, System One switches itself off and Juno runs exactly as before.
 
+### Juno Studio: try it and collect data in a browser
+
+```bash
+python -m juno_core.slu studio
+```
+
+This opens a local page (only on 127.0.0.1) with three tabs:
+
+- **Try it** listens and shows, per utterance, what System One decided from
+  the sound next to what System Two made of the words, with probabilities,
+  latency and agreement. You can mark what each utterance really was and
+  save those marks as a real-world test set.
+- **Collect** runs a guided, consented session: prompt by prompt (give Juno
+  timer commands, talk to each other, play a podcast), each utterance
+  labelled by its prompt. There's also free recording for extra examples,
+  e.g. minimal pairs like "pause" and "unpause".
+- **Results** evaluates a model on the sessions you picked and trains a new
+  one with them.
+
+It uses the same capture, VAD, encoders and teacher as the runtime, and
+keeps the same rule: audio stays in memory. A saved session is encoder
+vectors, what speech-to-text heard, the label, and provenance, under
+`data/slu/studio/`. `--simulate path/to/wavs` plays WAV files instead of
+the microphone.
+
 ### Training a model
 
 ```bash
@@ -400,11 +426,19 @@ python -m juno_core.slu synth   --out data/slu/syn --size 3000 --augment 1 --noi
 python -m juno_core.slu import-ami --out data/slu/real
 python -m juno_core.slu import-speech-commands --out data/slu/real
 python -m juno_core.slu label   --manifest data/slu/syn/manifest.jsonl data/slu/real/*.jsonl \
-                                --out data/slu/labelled.jsonl --stt parakeet-0.6b
+                                --out data/slu/labelled.jsonl --stt parakeet-0.6b --judge mlx
 python -m juno_core.slu embed   --rows data/slu/labelled.jsonl --encoder parakeet --out data/slu/emb
 python -m juno_core.slu train   --rows data/slu/labelled.jsonl --allow-internal --targets gold \
                                 --embeddings data/slu/emb/parakeet__*.npz --out models/s1.npz
 ```
+
+`--judge mlx` makes the teacher better: a local language model (Qwen3.5-4B
+via mlx-lm, offline, no key) asked, for every clip, who it was for and what
+was wanted, multiple choice. Its answer is read as probabilities from the
+model's next-token odds, not as text it writes. Already-labelled clips can be
+re-judged without re-running speech-to-text (`relabel --judge mlx`), and
+`python -m juno_core.slu teachers` scores the old teacher, the judge and
+blends against the gold labels.
 
 `synth` voices a scripted corpus with macOS `say`. Apple's licence makes
 models trained on that audio **not distributable**, which is why
@@ -449,9 +483,15 @@ What that says:
   teacher.** Heard cold, with no conversation and no language-model second
   opinion, System Two misses about half of short commands and open requests
   (its own end-to-end accuracy on the held-out clips is 67%), and the student
-  inherits that.
-  Mixing in gold labels fixes most of it. A stronger teacher (`label --llm`,
-  a bigger recogniser) is the obvious next experiment.
+  inherits that. Mixing in gold labels fixes most of it.
+- **A better teacher helps, but doesn't close the gap yet.** The language-model
+  judge (below) is right about who an utterance was for 75% of the time
+  (the old teacher: 70%), misses 42% of requests instead of 50%, and its
+  false activations fall from 5.7% to 3.9%. A student distilled from it alone
+  now skips STT on 8% of clips (was 1%), and with gold labels mixed in, 40%
+  (was 34%). What still limits it is the words: on these clips speech
+  recognition often loses or garbles the name, and a bare "louder" is
+  honestly ambiguous from text.
 - **Simple commands go; details escalate.** Timer lengths were right only
   about a quarter of the time from audio alone, so the router escalated
   nearly all of them, as designed.
@@ -704,6 +744,7 @@ juno_core/
     parse.py                transcript -> intent and slots
     corpus.py, data.py      scripted lines, TTS, augmentation, public corpora
     collect.py              guided, consented session (keeps vectors, not audio)
+    studio/                 Juno Studio: the local web page for try / collect / results
     training.py, bench.py   python -m juno_core.slu: train, evaluate, benchmark
   stt/                    speech-to-text: the interface, plus four ready adapters
   llm/                    the BYOK language-model interface and four adapters

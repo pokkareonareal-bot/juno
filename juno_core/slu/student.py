@@ -405,8 +405,14 @@ def build_targets(rows: Sequence[dict], schema: Schema, mode: str = "teacher",
             a = np.full(len(ADDRESSEES), 1.0 / len(ADDRESSEES), np.float32)
         A[r] = a / a.sum()
 
-        teacher_i = intent_vec(row.get("t_intent"), float(row.get("t_intent_p", 1.0))) \
-            if row.get("t_intent") else None
+        teacher_i = None
+        probs = row.get("t_intent_probs")
+        if probs:
+            # The judge's whole distribution: what distillation is for.
+            v = np.asarray([float(probs.get(n, 0.0)) for n in intents], np.float32)
+            teacher_i = v / v.sum() if v.sum() > 0 else None
+        if teacher_i is None and row.get("t_intent"):
+            teacher_i = intent_vec(row.get("t_intent"), float(row.get("t_intent_p", 1.0)))
         gold_i = intent_vec(row.get("g_intent"), 1.0) if row.get("g_intent") else None
         i = _blend(teacher_i, gold_i, mode, gold_weight)
         # The intent head learns only from speech that was for the assistant:

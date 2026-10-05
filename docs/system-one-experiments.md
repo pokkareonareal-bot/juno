@@ -66,7 +66,7 @@ Change one thing at a time, keep the split and seed fixed:
 | Pooling | `stats` vs `stats_thirds` (keeps rough order) | `...@L17:stats_thirds` |
 | Head | linear vs one hidden layer | `train --hidden 0` / `--hidden 256` |
 | Targets | teacher (distillation) / gold / mix | `train --targets teacher|gold|mix` |
-| Teacher strength | Parakeet 110M, Parakeet 0.6B, Whisper large-v3-turbo, with/without the LLM second opinion | `label --stt ... [--llm anthropic]` |
+| Teacher strength | Parakeet 110M, Parakeet 0.6B, Whisper large-v3-turbo; the engine alone vs the language-model judge; judge weight | `label --stt ... [--judge mlx] [--judge-weight 0.8]`, or `relabel` to re-judge stored transcripts |
 | Training data | synthetic only / + AMI / + Speech Commands / + your consented sessions | which manifests you pass to `label` and `train` |
 | Budgets | 0.5%, 1%, 2% | `--max-false-ignore`, `--max-wrong-act`, `--max-false-activation` |
 | Threshold margin | point estimate vs. Wilson bound at z = 1, 2 | `--margin-z 0 / 1 / 2` |
@@ -107,6 +107,12 @@ python -m juno_core.slu import-speech-commands --out data/slu/real
 python -m juno_core.slu collect --out data/slu/consented/s1 --speakers p1,p2 \
     --room kitchen --consent release
 ```
+
+Or do step 4 in a browser: `python -m juno_core.slu studio`, then the
+**Collect** tab. Sessions land in `data/slu/studio/` in the same format, and
+the **Results** tab evaluates and trains on them. The studio's **Try it** tab
+is also the quickest qualitative check: speak, and watch System One's
+decision next to System Two's for every utterance.
 
 Nothing writes audio except the TTS engine itself. Augmented copies, AMI
 utterances, and noise clips are recipes in the manifest, rebuilt in memory.
@@ -242,7 +248,9 @@ All of these come from `bench.json` → `systems.*`.
 - `addressed_accuracy`, `addressed_auc`, `addressed_ece` (calibration)
 - `intent_accuracy`, `intent_ece`, `slot_accuracy`, the top `intent_confusions`
 - `typed_commands_acted`: the share of typed commands handled with no STT
-- `teacher_vs_gold`: the teacher's own accuracy, false activations, misses
+- `teacher_vs_gold`: the teacher's own accuracy, false activations, misses.
+  `python -m juno_core.slu teachers --rows <relabelled rows>` compares the old
+  teacher, the language-model judge and blends of the two on the same clips
 - `by_source` and `by_category`: **check that real-audio rows (`ami`,
   `speech_commands`, `consented`) aren't much worse than synthetic ones**
 - `encode_ms` p50/p95, model size (`ls -la` the `.npz`), parameter count
@@ -333,14 +341,16 @@ commands above; the sweep table is `reports/sweep/sweep.md`.
 | H2 safety | **mostly** | student false-ignore 0.4%, false-activation 0.0%; wrong acts 1.1% ± 1.1%, all of seed 0's being "unpause" → `media.pause` |
 | H3 accuracy | **supported, with a caveat** | hybrid 70.0% correct vs 66.7% for the best always-transcribe (Whisper turbo). The caveat: template overlap between train and test. |
 | H4 latency | **split** | decided-by-System-One clips: 16 ms p50 vs 36 ms (Parakeet 110M) / 315 ms (Whisper small). But typed-command p50 overall is *not* lower than always-Parakeet, because over half of them escalate and pay both. Compute per utterance: −33% vs Whisper small, −8% vs Parakeet 110M. |
-| H5 distillation | **refuted with this teacher** | teacher-only targets: 1% avoided, AUC 0.74. The cold teacher misses ~half of commands. Mix: 34%; gold: 48%. |
+| H5 distillation | **refuted with the first teacher; partly rescued by a better one** | first teacher (the cold engine): teacher-only targets 1% avoided, AUC 0.74; mix 34%; gold 48%. With the language-model judge (`relabel --judge mlx`): teacher-only 8% ± 5, AUC 0.85; mix 40% ± 8; the teacher itself right about who an utterance was for 75% of the time (was 70%), missing 42% of requests (was 50%), false activations 3.9% (was 5.7%). |
 | H6 pretrained encoder | **supported** | log-mel 7%, gate features 6%, Parakeet 4 / 8 / 17 layers: 11 / 26 / 48% |
 
 The experiments most likely to change the picture, roughly in order:
 
-1. **A stronger teacher.** `label --llm <provider>` (the second opinion on
-   every ambiguous clip) and/or `--stt whisper:large-v3-turbo`. Re-test H5:
-   does pure distillation work once the teacher is good?
+1. **A still stronger teacher.** The judge (`--judge mlx`) is limited by the
+   transcripts: on these clips the recogniser loses or garbles the name
+   about a third of the time. Try `--stt whisper:large-v3-turbo` for the
+   teacher's transcripts, a bigger judge (`--judge mlx:<repo>`), and
+   `teachers` to compare them against gold before training anything.
 2. **Consented real sessions** (`collect`) as a held-out test set, recorded
    on a different day. This is the number that matters most.
 3. **SLURP** with a schema built from its intents, for a number comparable

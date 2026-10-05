@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="studio-token" content="__STUDIO_TOKEN__">
+  <title>Juno Studio</title>
+  <link rel="stylesheet" href="/static/studio.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"></span>
+      <div>
+        <h1>Juno Studio</h1>
+        <p class="sub">Try System One · collect training data · measure it</p>
+      </div>
+    </div>
+    <div class="chips" id="chips"></div>
+  </header>
+
+  <div id="loading" class="loading" hidden></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="try" aria-selected="true">Try it</button>
+    <button role="tab" data-tab="collect" aria-selected="false">Collect</button>
+    <button role="tab" data-tab="results" aria-selected="false">Results</button>
+  </nav>
+
+  <main>
+    <!-- TRY ---------------------------------------------------------------->
+    <section id="tab-try" class="tab" role="tabpanel">
+      <aside class="side">
+        <div class="card">
+          <button id="try-toggle" class="big primary">Start listening</button>
+          <div class="meter"><div id="try-meter"></div></div>
+          <p class="hint" id="try-hint">Talk normally: to Juno, to someone else, or let the TV play.
+            Nothing is saved unless you label utterances and save them.</p>
+        </div>
+
+        <div class="card">
+          <h3>Model</h3>
+          <select id="model-select"></select>
+          <p class="hint" id="model-meta"></p>
+        </div>
+
+        <div class="card">
+          <h3>Pretend that…</h3>
+          <label class="switch"><input type="checkbox" id="st-awaiting"><span></span>
+            Juno just asked a question</label>
+          <label class="switch"><input type="checkbox" id="st-timer"><span></span>
+            A timer is running</label>
+          <p class="hint">Some commands only count in context: "yes" answers a question,
+            "cancel the timer" needs a timer.</p>
+        </div>
+
+        <div class="card stats" id="try-stats"></div>
+
+        <div class="card">
+          <h3>Your labels <span class="count" id="label-count">0</span></h3>
+          <p class="hint">Mark what each utterance really was. Saved labels become a real-world
+            test set for the Results tab.</p>
+          <button id="save-labels" class="secondary" disabled>Save labels…</button>
+        </div>
+
+        <details class="card legend">
+          <summary>How to read a card</summary>
+          <p><b class="r act">ACT</b> System One handled it alone, from the sound, with no transcript.</p>
+          <p><b class="r ignore">IGNORE</b> It decided this wasn't for Juno and dropped it.</p>
+          <p><b class="r escalate">ESCALATE</b> Not sure, or the words matter, so speech-to-text runs (System Two).</p>
+          <p>System Two runs on every utterance here, so you can compare. In real use it only runs on escalations.</p>
+        </details>
+      </aside>
+
+      <div class="feed" id="feed">
+        <div class="empty" id="feed-empty">
+          <p>Press <b>Start listening</b> and say something like
+            <q>Juno, what time is it?</q>, <q>turn it up</q>, or
+            <q>did you feed the cat?</q></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- COLLECT ------------------------------------------------------------>
+    <section id="tab-collect" class="tab" role="tabpanel" hidden>
+      <div id="collect-setup" class="setup card">
+        <h2>Record a consented session</h2>
+        <p class="lede">Juno prompts you through about ten minutes of talking: to Juno, to each other, or
+          with media playing. Each utterance is labelled by its prompt, so there's nothing to label
+          afterwards. <b>No audio is saved</b>, only encoder vectors, what speech-to-text heard,
+          and the label.</p>
+        <div class="grid2">
+          <label class="field">Who will speak?
+            <input id="cs-speakers" placeholder="p1, p2" autocomplete="off">
+            <span class="hint">pseudonyms, comma-separated, never real names</span></label>
+          <label class="field">Room
+            <input id="cs-room" placeholder="kitchen" autocomplete="off">
+            <span class="hint">where the microphone is</span></label>
+        </div>
+        <fieldset class="field">
+          <legend>What may be done with it?</legend>
+          <label class="radio-card"><input type="radio" name="cs-consent" value="internal" checked>
+            <span><b>Internal</b>: experiments on this machine only. Models trained on it are marked not
+              distributable.</span></label>
+          <label class="radio-card"><input type="radio" name="cs-consent" value="release">
+            <span><b>Release</b>: models and tables derived from it may be published with an open-source
+              project.</span></label>
+        </fieldset>
+        <fieldset class="field">
+          <legend>Keep vectors from</legend>
+          <div id="cs-encoders" class="checks"></div>
+        </fieldset>
+        <label class="consent"><input type="checkbox" id="cs-confirm">
+          <span>Everyone who will be heard, including anyone who might walk through, has agreed to
+            this session and to the scope above.</span></label>
+        <button id="cs-start" class="big primary">Start session</button>
+      </div>
+
+      <div id="collect-live" hidden>
+        <div class="session-bar card">
+          <div>
+            <h2 id="sess-title"></h2>
+            <p class="hint" id="sess-meta"></p>
+          </div>
+          <div class="sess-counts" id="sess-counts"></div>
+          <div class="sess-actions">
+            <button id="sess-finish" class="primary">Finish &amp; save</button>
+            <button id="sess-abandon" class="ghost">Abandon</button>
+          </div>
+        </div>
+        <div class="progress"><div id="sess-progress"></div></div>
+
+        <div class="collect-grid">
+          <div>
+            <div class="card prompt" id="prompt"></div>
+            <div class="card">
+              <h3>Free recording</h3>
+              <p class="hint">Extra examples of one thing, e.g. minimal pairs like "pause" and
+                "unpause", or a command the script doesn't cover.</p>
+              <div class="grid3">
+                <label class="field">Who for?
+                  <select id="fr-label"></select></label>
+                <label class="field">Intent
+                  <select id="fr-intent"></select></label>
+                <label class="field">Speaker
+                  <select id="fr-speaker"></select></label>
+              </div>
+              <button id="fr-toggle" class="secondary">Record</button>
+            </div>
+          </div>
+          <div class="card heard">
+            <h3>Heard in this session</h3>
+            <p class="hint">What speech-to-text made of each utterance, next to its label. Discard
+              anything that went wrong (a cough, the wrong person, a false start).</p>
+            <ol id="heard-list" class="heard-list"></ol>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RESULTS ------------------------------------------------------------>
+    <section id="tab-results" class="tab" role="tabpanel" hidden>
+      <div class="results-grid">
+        <div>
+          <div class="card">
+            <h3>Sessions <button class="link" id="refresh-lists">refresh</button></h3>
+            <div id="session-list" class="pick-list"></div>
+          </div>
+          <div class="card">
+            <h3>Models</h3>
+            <div id="model-list" class="pick-list"></div>
+          </div>
+        </div>
+        <div>
+          <div class="card">
+            <h3>Evaluate</h3>
+            <p class="hint">How the chosen model does on the sessions you picked: real voices, your room.</p>
+            <label class="switch"><input type="checkbox" id="ev-awaiting"><span></span>
+              Judge as if Juno had just asked a question</label>
+            <button id="ev-run" class="primary">Evaluate</button>
+            <div id="ev-out"></div>
+          </div>
+          <div class="card">
+            <h3>Train a model</h3>
+            <div class="grid3">
+              <label class="field">Name <input id="tr-name" value="studio-model" autocomplete="off"></label>
+              <label class="field">Encoder <select id="tr-encoder"></select></label>
+              <label class="field">Labels
+                <select id="tr-targets">
+                  <option value="gold">gold: the prompts' labels</option>
+                  <option value="mix">mix: half gold, half teacher</option>
+                  <option value="teacher">teacher: distillation only</option>
+                </select></label>
+            </div>
+            <label class="switch"><input type="checkbox" id="tr-base" checked><span></span>
+              Include the base data (synthetic + public corpora in data/slu)</label>
+            <label class="switch"><input type="checkbox" id="tr-internal"><span></span>
+              Allow non-distributable data (macOS-TTS clips, internal sessions)</label>
+            <p class="hint">Uses the sessions ticked on the left. Training splits by speaker, so
+              sessions alone need several speakers; with the base data, a session or two is enough.</p>
+            <button id="tr-run" class="primary">Train</button>
+            <pre id="tr-log" class="log" hidden></pre>
+            <div id="tr-out"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="save-dialog">
+    <form method="dialog" id="save-form">
+      <h3>Save your labels as a test set</h3>
+      <label class="field">Room <input id="sv-room" placeholder="kitchen" autocomplete="off"></label>
+      <label class="field">Your pseudonym <input id="sv-speaker" placeholder="p1" autocomplete="off"></label>
+      <label class="radio-card"><input type="radio" name="sv-consent" value="internal" checked>
+        <span><b>Internal</b>: this machine only</span></label>
+      <label class="radio-card"><input type="radio" name="sv-consent" value="release">
+        <span><b>Release</b>: may be published</span></label>
+      <label class="consent"><input type="checkbox" id="sv-confirm" required>
+        <span>Everyone heard in these utterances agreed to them being kept like this.</span></label>
+      <div class="dialog-actions">
+        <button value="cancel" class="ghost" formnovalidate>Cancel</button>
+        <button value="save" class="primary" id="sv-save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/static/studio.js"></script>
+</body>
+</html>

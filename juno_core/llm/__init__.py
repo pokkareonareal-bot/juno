@@ -125,11 +125,14 @@ def build_model(config, api_key: str | None = None) -> BaseModel:
     if provider == "gemini" or provider == "google":
         from .gemini import GeminiModel
         return GeminiModel(model=model or "gemini-2.5-flash", api_key=api_key)
+    if provider == "mlx":
+        from .mlx_local import DEFAULT_MODEL, MLXModel
+        return MLXModel(model=model or DEFAULT_MODEL)
     if provider == "ollama":
         from .ollama import OllamaModel
         return OllamaModel(model=model or "llama3.2",
                             base_url=config.get("base_url", "http://localhost:11434"))
     raise ModelError(
         f"unknown llm.provider {provider!r} -- expected one of: "
-        f"echo, openai, anthropic, gemini, ollama"
+        f"echo, openai, anthropic, gemini, ollama, mlx"
     )
