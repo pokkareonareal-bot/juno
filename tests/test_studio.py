@@ -160,7 +160,7 @@ class Trying(StudioBase):
         self.call("/api/listen/stop", {})
         u = utterances[0]
         self.assertEqual(u["agreement"], "no_model")                 # no model in this root
-        self.assertEqual(u["system_two"]["intent"], "time.now")
+        self.assertEqual(u["cascade"]["intent"], "time.now")
         self.assertEqual(self.call("/api/try/label", {"id": u["id"], "addressed": "human_directed"})[0], 200)
         # Labelling again replaces, rather than duplicates.
         self.call("/api/try/label", {"id": u["id"], "addressed": "assistant_directed", "intent": "time.now"})

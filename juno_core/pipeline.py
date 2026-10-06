@@ -8,16 +8,16 @@ README) were measured against:
     mic -> voice activity -> [was that you? -> is it worth transcribing?]
         -> speech-to-text (yours) -> was that meant for me? -> your callback
 
-With System One switched on (``system_one.mode``, see juno_core/slu), a
+With Reflex SLU switched on (``reflex.mode``, see juno_core/slu), a
 fast path sits in front of the transcription:
 
-    mic -> voice activity -> was that you? -> SYSTEM ONE (audio only)
+    mic -> voice activity -> was that you? -> REFLEX (audio only)
         ignore   -> dropped, nothing transcribed
         act      -> typed Decision straight to your on_decision handler
-        escalate -> [gate] -> speech-to-text -> intent -> SYSTEM TWO
+        escalate -> [gate] -> speech-to-text -> intent -> CASCADE
                     -> typed Decision (with the transcript) to the same handler
 
-In ``shadow`` mode System One runs and is logged next to System Two on every
+In ``shadow`` mode Reflex runs and is logged next to the cascade on every
 turn, and changes nothing.
 
 Two things this file deliberately does NOT reproduce from the original
@@ -53,7 +53,7 @@ from .events import (
     INTENT_IGNORED,
     SEGMENT_DROPPED,
     SLU_DECIDED,
-    SLU_SYSTEM_TWO,
+    SLU_CASCADE,
     SPEECH_START,
     TRANSCRIBE_STARTED,
     TRANSCRIPT_READY,
@@ -64,15 +64,24 @@ from .intelligence.context import ConversationContext, Utterance
 from .intelligence.gate import Acoustics, Gate, Snapshot, verdicts_from
 from .intelligence.intent import IntentDecision, IntentEngine
 from .slu.router import ConversationState
-from .slu.schema import CORE_SCHEMA, Decision, Schema
-from .slu.system_one import SystemOne
-from .slu.teacher import SystemTwo
+from .slu.reflex import Reflex
+from .slu.schema import CORE_SCHEMA, SOURCE_REFLEX, Decision, Schema
+from .slu.teacher import Cascade
 from .stt import STTEngine
 
 
 def _section(config, key: str) -> Section:
     value = config.get(key) if config is not None else None
     return value if value is not None else Section({})
+
+
+def _reflex_section(config) -> Section:
+    # "system_one" is this key's old name; it is still read when "reflex" is absent.
+    for key in ("reflex", "system_one"):
+        value = config.get(key) if config is not None else None
+        if value is not None:
+            return value
+    return Section({})
 
 
 # Called with (text, decision, context) once an utterance is accepted.
@@ -83,7 +92,7 @@ AcceptCallback = Callable[[str, IntentDecision, ConversationContext], "str | Non
 # Called with (decision, context) for every utterance meant for the
 # assistant, whichever system answered: decision.source says which, and
 # decision.transcript is None when no transcription was made. Same return
-# convention as AcceptCallback. Register one of these and System One may
+# convention as AcceptCallback. Register one of these and Reflex may
 # act on its own; without it, there is nothing for a typed answer to go to.
 DecisionCallback = Callable[[Decision, ConversationContext], "str | None"]
 
@@ -128,12 +137,12 @@ class JunoPipeline:
             observer=observer, assistant_name=self.assistant_name,
         )
 
-        # System One loads its own model and schema; System Two answers in
-        # whichever schema System One was trained on, so the agent sees one
+        # Reflex loads its own model and schema; the cascade answers in
+        # whichever schema Reflex was trained on, so the agent sees one
         # vocabulary whichever path a turn took.
-        self.system_one = SystemOne(_section(config, "system_one"), observer, schema=schema)
-        self.schema = schema or getattr(self.system_one, "schema", None) or CORE_SCHEMA
-        self.system_two = SystemTwo(
+        self.reflex = Reflex(_reflex_section(config), observer, schema=schema)
+        self.schema = schema or getattr(self.reflex, "schema", None) or CORE_SCHEMA
+        self.cascade = Cascade(
             self.schema, self.assistant_name, model,
             aliases=_section(config, "intent").get("assistant_aliases") or ())
         # Conversation states the host knows about and Juno cannot hear, e.g.
@@ -152,12 +161,30 @@ class JunoPipeline:
         self._busy = False
         self._running = False
 
+    # The old names of ``reflex`` and ``cascade``, for code written before the rename.
+
+    @property
+    def system_one(self) -> Reflex:
+        return self.reflex
+
+    @system_one.setter
+    def system_one(self, value: Reflex) -> None:
+        self.reflex = value
+
+    @property
+    def system_two(self) -> Cascade:
+        return self.cascade
+
+    @system_two.setter
+    def system_two(self, value: Cascade) -> None:
+        self.cascade = value
+
     # -- the loop -----------------------------------------------------------
 
     def run_forever(self) -> None:
         """Blocks, listening, until stopped (Ctrl+C or `stop()`)."""
         self.stt.warmup()
-        self.system_one.warmup()
+        self.reflex.warmup()
         self.capture.start()
         self._running = True
         try:
@@ -206,17 +233,17 @@ class JunoPipeline:
                 self._emit(Stage.AUDIO, SEGMENT_DROPPED, turn_id, reason="not_own_voice")
                 return
 
-        if self.system_one.enabled:
-            fast = self.system_one.decide(segment.audio, self._rate,
+        if self.reflex.enabled:
+            fast = self.reflex.decide(segment.audio, self._rate,
                                           self._conversation_state(), turn=turn_id)
-            acting = self.system_one.mode == "on"
+            acting = self.reflex.mode == "on"
             can_act = self.on_decision is not None
             effective = acting and (fast.route == "ignore" or (fast.route == "act" and can_act))
             self._emit(Stage.SLU, SLU_DECIDED, turn_id, effective=effective,
                        summary=fast.summary(), p=fast.intent.p if fast.intent else fast.addressed.p,
                        seconds=round(float(segment.duration), 3), **fast.as_json(full=True))
             if effective and fast.route == "ignore":
-                self._emit(Stage.AUDIO, SEGMENT_DROPPED, turn_id, reason="system_one")
+                self._emit(Stage.AUDIO, SEGMENT_DROPPED, turn_id, reason=SOURCE_REFLEX)
                 return
             if effective and fast.route == "act":
                 self.context.add_utterance(Utterance(
@@ -272,12 +299,12 @@ class JunoPipeline:
         self.intent.record(transcript.text, decision2, duration=segment.duration)
 
         slow = None
-        if self.system_one.enabled or self.on_decision is not None:
-            slow = self.system_two.decide(
+        if self.reflex.enabled or self.on_decision is not None:
+            slow = self.cascade.decide(
                 transcript.text, decision2, reliable=transcript.reliable, turn=turn_id,
                 latency_ms={"stt": transcript.latency * 1000.0,
                             "intent": decision2.latency * 1000.0})
-            self._emit(Stage.SLU, SLU_SYSTEM_TWO, turn_id, **slow.as_json())
+            self._emit(Stage.SLU, SLU_CASCADE, turn_id, **slow.as_json())
 
         if not decision2.ai_intent:
             self._emit(Stage.INTENT, INTENT_IGNORED, turn_id,

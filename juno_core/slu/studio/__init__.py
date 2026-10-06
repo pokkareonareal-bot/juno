@@ -1,4 +1,4 @@
-"""Juno Studio: a local web page for trying System One and collecting data for it.
+"""Juno Studio: a local web page for trying Reflex and collecting data for it.
 
     python -m juno_core.slu studio
 

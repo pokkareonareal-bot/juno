@@ -1,6 +1,6 @@
 """A better teacher: a language model that reads the transcript and answers in the schema.
 
-The first teacher was the runtime's System Two run cold: the heuristic intent
+The first teacher was the runtime's cascade run cold: the heuristic intent
 engine, which is deliberately conservative without conversation context and
 without its language-model second opinion. Measured against the scripted
 labels it missed about half of short commands ("a little louder", "scratch

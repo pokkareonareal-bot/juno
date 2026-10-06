@@ -3,8 +3,8 @@
 One object owns the microphone, the models and the state of the three
 activities the browser page offers:
 
-  TRY       listen continuously; for every utterance show what System One
-            decided from the audio and what System Two made of the words,
+  TRY       listen continuously; for every utterance show what Reflex
+            decided from the audio and what the cascade made of the words,
             side by side. Optionally mark what was actually meant, and save
             those marks as a small real-world test set.
   COLLECT   a guided, consented session: prompt by prompt ("ask Juno the
@@ -45,7 +45,7 @@ import numpy as np
 from juno_core.slu import data as D
 from juno_core.slu.collect import SLU_SCRIPT, consented_row, write_session
 from juno_core.slu.router import ConversationState
-from juno_core.slu.schema import ADDRESSEES, ASSISTANT, CORE_SCHEMA, OPEN_REQUEST
+from juno_core.slu.schema import ADDRESSEES, ASSISTANT, CORE_SCHEMA, OPEN_REQUEST, SOURCE_REFLEX
 
 DEFAULT_ENCODERS = ("parakeet", "logmel", "gate")
 RATE = 16000
@@ -238,7 +238,7 @@ class Studio:
         self.loading: dict[str, str] = {}
         self.teacher = teacher
         self.encoders: dict = {}           # spec -> AudioEncoder
-        self.system_one = None
+        self.reflex = None
         self.model_info: dict | None = None
         self.voice = None
 
@@ -253,8 +253,8 @@ class Studio:
         self.state = {"awaiting_answer": False, "timer_running": False}
         self.recent: OrderedDict[str, dict] = OrderedDict()
         self.labelled: list[tuple[dict, dict]] = []   # (row, {spec: vector})
-        self.stats = {"utterances": 0, "decided_by_system_one": 0, "agree": 0, "compared": 0,
-                      "s1_ms": []}
+        self.stats = {"utterances": 0, "decided_by_reflex": 0, "agree": 0, "compared": 0,
+                      "reflex_ms": []}
 
         self.session: Session | None = None
         self.recording: dict | None = None  # {"tag": Tag, "deadline": float | None}
@@ -264,7 +264,7 @@ class Studio:
 
     def status(self) -> dict:
         with self._lock:
-            s1_ms = self.stats["s1_ms"][-200:]
+            reflex_ms = self.stats["reflex_ms"][-200:]
             return {
                 "ready": self.teacher is not None and bool(self.encoders),
                 "loading": dict(self.loading),
@@ -277,11 +277,11 @@ class Studio:
                 "state": dict(self.state),
                 "stats": {
                     "utterances": self.stats["utterances"],
-                    "stt_avoided": round(self.stats["decided_by_system_one"] /
+                    "stt_avoided": round(self.stats["decided_by_reflex"] /
                                          max(1, self.stats["utterances"]), 3),
                     "agreement": round(self.stats["agree"] / self.stats["compared"], 3)
                     if self.stats["compared"] else None,
-                    "s1_ms_p50": round(float(np.median(s1_ms)), 1) if s1_ms else None,
+                    "reflex_ms_p50": round(float(np.median(reflex_ms)), 1) if reflex_ms else None,
                 },
                 "labelled": len(self.labelled),
                 "session": self.session.summary() if self.session else None,
@@ -375,7 +375,7 @@ class Studio:
     def _set_model(self, path: str) -> dict:
         from juno_core.slu.encoder import build_encoder
         from juno_core.slu.student import StudentModel
-        from juno_core.slu.system_one import SystemOne
+        from juno_core.slu.reflex import Reflex
 
         model = StudentModel.load(self._resolve(path))
         encoder = self.encoders.get(model.encoder_spec)
@@ -383,11 +383,11 @@ class Studio:
             encoder = build_encoder(model.encoder_spec)
             encoder.warmup()
             self.encoders[encoder.spec] = encoder
-        s1 = SystemOne({"mode": "on"}, model=model, encoder=encoder)
-        if not s1.enabled:
-            raise ValueError(s1.error)
+        reflex = Reflex({"mode": "on"}, model=model, encoder=encoder)
+        if not reflex.enabled:
+            raise ValueError(reflex.error)
         with self._lock:
-            self.system_one = s1
+            self.reflex = reflex
             self.model_info = _model_info(self._resolve(path), model)
         self._push_status()
         return self.model_info
@@ -505,26 +505,27 @@ class Studio:
                                               "duration": round(float(segment.duration), 2)})
             return
         vectors, ms = self._encode_all(audio)
-        s1 = None
-        if self.system_one is not None:
-            spec = self.system_one.encoder.spec
+        reflex = None
+        if self.reflex is not None:
+            spec = self.reflex.encoder.spec
             state = ConversationState(
                 since_ai=2.0 if self.state["awaiting_answer"] else float("inf"),
                 awaiting_answer=self.state["awaiting_answer"],
                 active=frozenset({"timer_running"} if self.state["timer_running"] else ()))
-            decision = self.system_one.decide_vector(vectors[spec], state, uid,
+            decision = self.reflex.decide_vector(vectors[spec], state, uid,
                                                      encode_ms=ms.get(spec, 0.0))
-            s1 = decision.as_json(full=True)
-            s1["intent_top"] = _top_intents(self.system_one, vectors[spec])
+            reflex = decision.as_json(full=True)
+            reflex["ms"] = reflex["latency_ms"][SOURCE_REFLEX]
+            reflex["intent_top"] = _top_intents(self.reflex, vectors[spec])
         teacher = self.teacher.label(audio, RATE).as_row() if self.teacher else None
-        agreement = _agreement(s1, teacher)
+        agreement = _agreement(reflex, teacher)
         with self._lock:
             self.stats["utterances"] += 1
-            if s1 and s1["route"] in ("act", "ignore"):
-                self.stats["decided_by_system_one"] += 1
-            if s1:
-                self.stats["s1_ms"].append(s1["latency_ms"]["system_one"])
-            if agreement in ("agree", "s1_would_miss", "s1_would_act_on_ignored",
+            if reflex and reflex["route"] in ("act", "ignore"):
+                self.stats["decided_by_reflex"] += 1
+            if reflex:
+                self.stats["reflex_ms"].append(reflex["ms"])
+            if agreement in ("agree", "reflex_would_miss", "reflex_would_act_on_ignored",
                              "different_intent"):
                 self.stats["compared"] += 1
                 self.stats["agree"] += agreement == "agree"
@@ -534,7 +535,7 @@ class Studio:
                 self.recent.popitem(last=False)
         self.events.publish("utterance", {
             "id": uid, "at": time.strftime("%H:%M:%S"), "duration": round(float(segment.duration), 2),
-            "system_one": s1, "system_two": _teacher_public(teacher), "agreement": agreement,
+            "reflex": reflex, "cascade": _teacher_public(teacher), "agreement": agreement,
             "state": dict(self.state)})
         self._push_status()
 
@@ -864,8 +865,8 @@ def _model_info(path: Path, model) -> dict:
     }
 
 
-def _top_intents(system_one, vector, k: int = 3) -> list[list]:
-    pred = system_one.model.predict(vector)
+def _top_intents(reflex, vector, k: int = 3) -> list[list]:
+    pred = reflex.model.predict(vector)
     top = sorted(pred.intent.items(), key=lambda kv: -kv[1])[:k]
     return [[name, round(p, 3)] for name, p in top]
 
@@ -878,24 +879,24 @@ def _teacher_public(t: dict | None) -> dict | None:
             "slots": t.get("t_slots") if t.get("t_accept") else {}, "stt_ms": t.get("stt_ms")}
 
 
-def _agreement(s1: dict | None, teacher: dict | None) -> str:
-    """How System One's decision compares with what System Two made of the words."""
-    if s1 is None:
+def _agreement(reflex: dict | None, teacher: dict | None) -> str:
+    """How Reflex's decision compares with what the cascade made of the words."""
+    if reflex is None:
         return "no_model"
     if teacher is None:
         return "no_teacher"
-    route = s1["route"]
+    route = reflex["route"]
     accepted = bool(teacher.get("t_accept"))
     if route == "escalate":
         return "escalated"
     if route == "ignore":
-        return "agree" if not accepted else "s1_would_miss"
+        return "agree" if not accepted else "reflex_would_miss"
     if not accepted:
-        return "s1_would_act_on_ignored"
-    same_intent = (s1.get("intent") or {}).get("value") == teacher.get("t_intent")
-    s1_slots = {k: v.get("value") for k, v in (s1.get("slots") or {}).items()}
+        return "reflex_would_act_on_ignored"
+    same_intent = (reflex.get("intent") or {}).get("value") == teacher.get("t_intent")
+    reflex_slots = {k: v.get("value") for k, v in (reflex.get("slots") or {}).items()}
     t_slots = teacher.get("t_slots") or {}
-    same_slots = all(t_slots.get(k) == v for k, v in s1_slots.items())
+    same_slots = all(t_slots.get(k) == v for k, v in reflex_slots.items())
     return "agree" if same_intent and same_slots else "different_intent"
 
 

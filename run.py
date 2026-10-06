@@ -153,11 +153,11 @@ def main() -> None:
 
     pipeline.on_accept = on_accept
 
-    if pipeline.system_one.enabled:
-        # Typed decisions, from either system. System One's arrive with no
+    if pipeline.reflex.enabled:
+        # Typed decisions, from either path. Reflex's arrive with no
         # transcript at all -- the core intents are handled right here, with
         # no speech-to-text and no language model; anything open-ended came
-        # through System Two and goes to the model as before.
+        # through the cascade and goes to the model as before.
         actions = CoreActions(pipeline)
 
         def on_decision(decision, context):
@@ -176,9 +176,9 @@ def main() -> None:
             return reply
 
         pipeline.on_decision = on_decision
-        print(f"System One: {pipeline.system_one.mode} ({pipeline.system_one.model.tag})")
-    elif pipeline.system_one.error:
-        print(f"(System One unavailable, running as before: {pipeline.system_one.error})")
+        print(f"Reflex SLU: {pipeline.reflex.mode} ({pipeline.reflex.model.tag})")
+    elif pipeline.reflex.error:
+        print(f"(Reflex SLU unavailable, running as before: {pipeline.reflex.error})")
 
     banner(pipeline.assistant_name, stt.name, model.name if model else "nothing",
            tts.name if tts else None)

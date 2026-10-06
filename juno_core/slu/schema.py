@@ -3,8 +3,8 @@
 An agent DECLARES what it can do -- a list of intents, each with typed slots
 -- and Juno ANSWERS in that shape, for every utterance, with a probability on
 every field. The agent never has to parse prose and never has to care how the
-answer was produced: by the small audio model alone ("System One"), or by
-speech-to-text plus the text-side engines ("System Two").
+answer was produced: by the small audio model alone (Reflex SLU), or by
+speech-to-text plus the text-side engines (the cascade).
 
     schema = Schema.from_dict({"name": "my-agent", "intents": [
         {"name": "lights.off", "description": "turn the lights off",
@@ -14,11 +14,11 @@ speech-to-text plus the text-side engines ("System Two").
     decision.as_json() ->
     {
       "route": "act",                         # act | ignore | escalate
-      "source": "system_one",                 # system_one | system_two
+      "source": "system_one",                 # system_one = Reflex SLU | system_two = the cascade
       "addressed": {"value": "assistant_directed", "p": 0.97},
       "intent":    {"value": "timer.set",  "p": 0.91},
       "slots":     {"duration": {"value": 420, "p": 0.88}},
-      "transcript": null,                      # only when System Two ran
+      "transcript": null,                      # only when the cascade ran
       ...
     }
 
@@ -29,11 +29,11 @@ THE THREE ROUTES
               filled, every probability above its threshold. The agent gets
               the JSON and no transcript, because none was made.
 ``escalate``  anything else -- uncertain, open-ended ("what's the capital of
-              Mongolia"), or an intent that needs exact words. System Two
+              Mongolia"), or an intent that needs exact words. The cascade
               runs and the agent gets the same shape back, plus the
               transcript.
 
-An open-ended request is not a failure of System One. Deciding THAT
+An open-ended request is not a failure of Reflex. Deciding THAT
 something is a question for the agent, and handing it on, is its job;
 carrying the content of the question is what words are for.
 
@@ -57,7 +57,17 @@ SCHEMA_FORMAT = "juno-schema/1"
 DECISION_FORMAT = "juno-decision/1"
 
 ROUTES = ("act", "ignore", "escalate")
-SOURCES = ("system_one", "system_two")
+
+# Decision.source as it goes out. Reflex SLU used to be called "System One" and
+# the cascade "System Two", and agents already read those spellings, so they stay
+# what is emitted until those agents have moved. Everything in this repo goes
+# through these constants: changing the spelling later means changing these two
+# lines (and swapping SOURCE_ALIASES so the old spellings are still read).
+SOURCE_REFLEX = "system_one"
+SOURCE_CASCADE = "system_two"
+SOURCES = (SOURCE_REFLEX, SOURCE_CASCADE)
+# Spellings also accepted when a Decision is built, mapped to the emitted one.
+SOURCE_ALIASES = {"reflex": SOURCE_REFLEX, "cascade": SOURCE_CASCADE}
 
 # Who an utterance was for. The same names gate_training.py uses, so feature
 # tables, student rows and decisions all speak one vocabulary.
@@ -85,12 +95,12 @@ class SchemaError(ValueError):
 class SlotSpec:
     """One typed field of an intent.
 
-    System One is a classifier, so every slot it fills is a choice among
+    Reflex is a classifier, so every slot it fills is a choice among
     ``values``: for ``duration`` that is a list of seconds (the ones people
     actually say -- 7 minutes yes, 7 minutes 13 seconds no); for ``enum``
     the declared options; for ``number`` the declared integers. A value
-    outside the list is not an error: System One cannot be confident about
-    it, so the utterance escalates and System Two fills the slot from the
+    outside the list is not an error: Reflex cannot be confident about
+    it, so the utterance escalates and the cascade fills the slot from the
     transcript, with whatever value was said.
     """
 
@@ -105,7 +115,7 @@ class SlotSpec:
         if self.type not in SLOT_TYPES:
             raise SchemaError(f"slot {self.name}: type must be one of {SLOT_TYPES}")
         if not self.values:
-            raise SchemaError(f"slot {self.name}: declare its values (System One "
+            raise SchemaError(f"slot {self.name}: declare its values (Reflex "
                               f"chooses among them)")
         if len(set(self.values)) != len(self.values):
             raise SchemaError(f"slot {self.name}: duplicate values")
@@ -248,13 +258,13 @@ OPEN_REQUEST_SPEC = IntentSpec(
 
 # -- the core schema ---------------------------------------------------------
 #
-# Short, closed, and chosen for what System One can plausibly carry from
+# Short, closed, and chosen for what Reflex can plausibly carry from
 # sound alone: commands people say in a few words, the same few ways. Things
 # with open content -- "remind me to call mum", "what's the weather in
 # Lisbon" -- are open requests on purpose.
 
 # The durations people actually ask for, in seconds. A timer for 13 minutes
-# is a perfectly good request; it just is not one System One will claim to
+# is a perfectly good request; it just is not one Reflex will claim to
 # have heard exactly, so it escalates.
 TIMER_DURATIONS = (
     30, 60, 90, 120, 180, 240, 300, 360, 420, 480, 540, 600, 720, 900,
@@ -328,7 +338,7 @@ class Decision:
     turn: str | None = None
     latency_ms: dict[str, float] = field(default_factory=dict)
     model: str | None = None
-    # System Two's own verdict object (IntentDecision), when it ran. Not
+    # The cascade's own verdict object (IntentDecision), when it ran. Not
     # serialised: the agent reads the typed fields; this is for code that
     # already speaks the old interface.
     detail: Any = None
@@ -336,6 +346,7 @@ class Decision:
     def __post_init__(self) -> None:
         if self.route not in ROUTES:
             raise ValueError(f"route must be one of {ROUTES}")
+        self.source = SOURCE_ALIASES.get(self.source, self.source)
         if self.source not in SOURCES:
             raise ValueError(f"source must be one of {SOURCES}")
 

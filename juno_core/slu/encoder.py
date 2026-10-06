@@ -4,7 +4,7 @@ The student does not learn to hear from scratch. It borrows the first half
 of a speech recogniser -- the ENCODER, which turns sound into a sequence of
 frames that already carry phonetic and lexical information -- and skips the
 second half, the DECODER, which turns those frames into words one token at
-a time. Words are exactly what System One is trying not to make.
+a time. Words are exactly what Reflex is trying not to make.
 
 Measured on an M1 (2.6 s command, median of 5, see benchmarks in the README):
 

@@ -36,13 +36,13 @@ Every number in this README was measured — see [REPORT.txt](REPORT.txt) for
 the methodology and the honest limits (section 6 of it, specifically — read
 that before you quote any of this elsewhere).
 
-**New, experimental: System One.** Juno can now also understand *without
+**New, experimental: Reflex SLU.** Juno can now also understand *without
 transcribing*. A small model listens to the audio itself and answers, as
 typed JSON in a schema your agent declares, "was that for me?" and "what was
 wanted?". Simple, confident requests are handled with no speech-to-text at
 all, speech that wasn't for Juno is dropped, and everything else falls back
-to the transcribe-and-read path, which answers in the same JSON. It's off by
-default and ships without a model. See [System One](#system-one-understanding-without-transcribing).
+to the cascade (the transcribe-and-read path), which answers in the same JSON. It's off by
+default and ships without a model. See [Reflex SLU](#reflex-slu-understanding-without-transcribing).
 
 ---
 
@@ -113,12 +113,12 @@ instead of a plain chat reply, and what the numbers above actually mean.
                                    expensive part.
       |
       v
-  SYSTEM ONE (optional)           Understands from the audio alone: a speech
+  REFLEX SLU (optional)           Understands from the audio alone: a speech
   juno_core/slu/                  encoder, no decoder, and a small classifier.
                                    ignore -> dropped; act -> typed JSON to your
                                    agent, nothing transcribed; escalate -> on
                                    down this diagram. Off by default; see
-                                   "System One" below.
+                                   "Reflex SLU" below.
       |
       v (escalate)
   WORTH TRANSCRIBING?             A gate that scores conversational timing
@@ -196,7 +196,7 @@ Silicon Mac when it's installed and `faster_whisper` otherwise.
 |---|---|---|---|---|
 | **mlx-whisper** (recommended on Apple Silicon) | `mlx_whisper` | `juno_core/stt/mlx_whisper.py` | `pip install mlx-whisper`, an M-series Mac | Local, offline, free. Runs Whisper on the Mac's GPU through Apple's MLX framework. First run downloads the converted weights from Hugging Face (`mlx-community`) and caches them. Doesn't run on Linux, Windows or Intel Macs. |
 | **faster-whisper** (recommended elsewhere) | `faster_whisper` | `juno_core/stt/faster_whisper.py` | `pip install faster-whisper` | Local, offline, free, and runs anywhere. First run downloads model weights (a few hundred MB) and caches them. Its CTranslate2 backend has no Metal support, so on a Mac it runs on the CPU. Fine, but slower than MLX there. |
-| **Parakeet** (fastest on Apple Silicon, English only) | `parakeet` | `juno_core/stt/parakeet.py` | `pip install -e ".[parakeet]"`, an M-series Mac | Local, offline, free. NVIDIA's Parakeet (CC BY 4.0 weights) on the Mac's GPU via MLX. `stt.model: parakeet-110m` or `parakeet-0.6b`. Measured on an M1 for a 2.6 s command: 45 ms (110M) and 85 ms (0.6B), against 354 ms for Whisper small.en. Also the model System One's encoder comes from. |
+| **Parakeet** (fastest on Apple Silicon, English only) | `parakeet` | `juno_core/stt/parakeet.py` | `pip install -e ".[parakeet]"`, an M-series Mac | Local, offline, free. NVIDIA's Parakeet (CC BY 4.0 weights) on the Mac's GPU via MLX. `stt.model: parakeet-110m` or `parakeet-0.6b`. Measured on an M1 for a 2.6 s command: 45 ms (110M) and 85 ms (0.6B), against 354 ms for Whisper small.en. Also the model Reflex's encoder comes from. |
 | OpenAI Whisper API | `openai_whisper` | `juno_core/stt/openai_whisper.py` | `OPENAI_API_KEY`, `pip install requests` | Simplest possible setup, no local model — audio leaves the machine. |
 
 Set `stt.provider` (and, for the two local engines, `stt.model` — `tiny.en`
@@ -318,7 +318,7 @@ whenever it's ready). It's the same shape used internally to hand a long job
 to a stronger model without going deaf while it runs — read its docstring,
 which explains why the interface is kept deliberately narrow.
 
-### The typed seam (System One)
+### The typed seam (Reflex SLU)
 
 The second seam takes **typed decisions** instead of text. Your agent
 declares what it can do — intents with typed slots — and Juno answers every
@@ -334,10 +334,14 @@ pipeline = JunoPipeline(config, stt=stt, model=model, schema=my_schema,
                         on_decision=on_decision)
 ```
 
-`decision.source` is `"system_one"` when it was decided from the audio alone
-(`decision.transcript` is then `None`, because nothing was transcribed) or
-`"system_two"` when speech-to-text ran (and the transcript is attached).
-The shape is the same either way. With `on_decision` registered, System One
+`decision.source` says which path answered: `"system_one"` when Reflex SLU
+decided from the audio alone (`decision.transcript` is then `None`, because
+nothing was transcribed), or `"system_two"` when the cascade ran speech-to-text
+(and the transcript is attached). Those two spellings predate the rename and
+are kept so agents already reading them keep working; compare against
+`juno_core.slu.schema.SOURCE_REFLEX` and `SOURCE_CASCADE` instead of the
+literals, and a later change of spelling won't reach your code.
+The shape is the same either way. With `on_decision` registered, Reflex
 may act on its own; without it, there is nothing for a typed answer to go to,
 so its `act` decisions escalate. The example file shows both seams.
 
@@ -349,13 +353,13 @@ here, matched to what you're actually building.
 
 ---
 
-## System One: understanding without transcribing
+## Reflex SLU: understanding without transcribing
 
 > **Experimental, off by default, no model shipped.** Everything below was
 > measured on synthetic speech plus a few real corpora on one M1; read
 > "What these numbers don't say" before quoting any of it.
 
-Everything above transcribes first and reads second. System One makes
+Everything above transcribes first and reads second. Reflex makes
 transcription optional. A small model listens to each utterance *as audio*
 and answers, in a typed schema your agent declares, the two questions that
 matter: **was that for me**, and **what was wanted**.
@@ -370,28 +374,30 @@ matter: **was that for me**, and **what was wanted**.
   timer for 7 minutes"). The JSON goes to your agent with no transcript and
   no language-model call.
 - **escalate**: unsure, open-ended ("what's the capital of Mongolia"), or a
-  detail it can't be sure of. The old path runs (System Two) and answers
-  in the same JSON, with the transcript attached.
+  detail it can't be sure of. The cascade (the old transcribe-then-read path)
+  runs and answers in the same JSON, with the transcript attached.
 
 The model is borrowed, not invented. It's the *encoder* half of a speech
 recogniser (NVIDIA Parakeet 110M by default, 17 ms on an M1), whose frames
 already carry the words, plus a classifier trained on top. It's trained by
-**distillation**: System Two, the expensive path, labels the training
+**distillation**: the cascade, the expensive path, labels the training
 clips, and gold labels from scripted recordings can be mixed in.
 
 ### Turning it on
 
 ```yaml
-system_one:
-  mode: shadow          # runs and logs next to the old path; changes nothing
-  model_path: models/s1-parakeet-gold.npz
+reflex:
+  mode: shadow          # runs and logs next to the cascade; changes nothing
+  model_path: models/reflex-parakeet-gold.npz
 ```
 
+(`system_one:` is this key's old name; it is still read when `reflex:` is absent.)
+
 Run in `shadow` first. `python -m juno_core.slu shadow --log logs/events.jsonl`
-compares System One with System Two on every turn and lists every
+compares Reflex with the cascade on every turn and lists every
 disagreement that would have mattered. Switch to `on` once you trust it. If
 the model file is missing, unreadable, or trained on another encoder or
-schema, System One switches itself off and Juno runs exactly as before.
+schema, Reflex switches itself off and Juno runs exactly as before.
 
 ### Juno Studio: try it and collect data in a browser
 
@@ -401,8 +407,8 @@ python -m juno_core.slu studio
 
 This opens a local page (only on 127.0.0.1) with three tabs:
 
-- **Try it** listens and shows, per utterance, what System One decided from
-  the sound next to what System Two made of the words, with probabilities,
+- **Try it** listens and shows, per utterance, what Reflex decided from
+  the sound next to what the cascade made of the words, with probabilities,
   latency and agreement. You can mark what each utterance really was and
   save those marks as a real-world test set.
 - **Collect** runs a guided, consented session: prompt by prompt (give Juno
@@ -429,7 +435,7 @@ python -m juno_core.slu label   --manifest data/slu/syn/manifest.jsonl data/slu/
                                 --out data/slu/labelled.jsonl --stt parakeet-0.6b --judge mlx
 python -m juno_core.slu embed   --rows data/slu/labelled.jsonl --encoder parakeet --out data/slu/emb
 python -m juno_core.slu train   --rows data/slu/labelled.jsonl --allow-internal --targets gold \
-                                --embeddings data/slu/emb/parakeet__*.npz --out models/s1.npz
+                                --embeddings data/slu/emb/parakeet__*.npz --out models/reflex.npz
 ```
 
 `--judge mlx` makes the teacher better: a local language model (Qwen3.5-4B
@@ -481,7 +487,7 @@ What that says:
   the layer, the better.
 - **Distilling from today's pipeline *alone* doesn't work, because of the
   teacher.** Heard cold, with no conversation and no language-model second
-  opinion, System Two misses about half of short commands and open requests
+  opinion, the cascade misses about half of short commands and open requests
   (its own end-to-end accuracy on the held-out clips is 67%), and the student
   inherits that. Mixing in gold labels fixes most of it.
 - **A better teacher helps, but doesn't close the gap yet.** The language-model
@@ -510,16 +516,16 @@ the right intent and slots.
 | always transcribe, Parakeet 0.6B | 65.7% | 3.4% | 54% | 100% | 81 / 134 | 90 |
 | always transcribe, Whisper small.en (today's default) | 63.0% | 3.4% | 60% | 100% | 315 / 441 | 366 |
 | always transcribe, Whisper large-v3-turbo | 66.7% | 3.4% | 53% | 100% | 1669 / 1980 | 1816 |
-| **System One + Parakeet 110M** | **70.0%** | **2.3%** | **49%** | **53%** | 38 / 71 | 37 |
-| **System One + Whisper small.en** | **73.5%** | **0.6%** | **44%** | **53%** | 345 / 449 | 244 |
+| **Reflex + Parakeet 110M** | **70.0%** | **2.3%** | **49%** | **53%** | 38 / 71 | 37 |
+| **Reflex + Whisper small.en** | **73.5%** | **0.6%** | **44%** | **53%** | 345 / 449 | 244 |
 
-- **When System One decides** (47% of clips), the answer takes **16 ms**
+- **When Reflex decides** (47% of clips), the answer takes **16 ms**
   (p50), against 36 ms for the fastest recogniser and 315 ms for Juno's
   default one. **When it escalates**, those 16 ms are added on top of the
   transcription.
 - So **against Whisper, compute per utterance falls by a third** (366 → 244
   ms wall, 46 → 28 s CPU over the run). **Against Parakeet 110M the saving
-  is small** (40 → 37 ms): the encoder System One borrows is already a third
+  is small** (40 → 37 ms): the encoder Reflex borrows is already a third
   of that recogniser's whole cost. Skipping STT pays off in proportion to
   how expensive your STT is.
 - The hybrid is *more* accurate than any always-transcribe system here,
@@ -528,7 +534,7 @@ the right intent and slots.
   share phrasing templates.
 - Every system still misses many requests. That's the cold-start
   conservatism of the addressee engine, with no conversation and no
-  language-model second opinion, not something System One introduced.
+  language-model second opinion, not something Reflex introduced.
 
 ### What these numbers don't say
 
@@ -539,7 +545,7 @@ mode on your own use. Evaluation is cold (no conversation history), which is
 the teacher's worst case and makes context-bound intents ("yes" to a
 question) always escalate. One machine, one run. The full method, the
 baselines to compare against, and how to write it up are in
-[docs/system-one-experiments.md](docs/system-one-experiments.md).
+[docs/reflex-experiments.md](docs/reflex-experiments.md).
 
 ---
 
@@ -734,13 +740,13 @@ juno_core/
     intent.py              the addressee-detection engine itself
     followups.py           "say that again" / "tell me more", detected cheaply
     executor.py             the narrow interface for handing off long-running work
-  slu/                    System One: understanding without transcribing
+  slu/                    Reflex SLU: understanding without transcribing
     schema.py               the typed contract: Schema, Decision, the core intents
     encoder.py              audio -> pooled vector (parakeet | whisper | logmel)
     student.py              the classifier heads, training, calibration
     router.py               probabilities -> act | ignore | escalate
-    system_one.py           the runtime fast path
-    teacher.py              System Two, and the offline teacher built from it
+    reflex.py               the runtime fast path
+    teacher.py              the cascade, and the offline teacher built from it
     parse.py                transcript -> intent and slots
     corpus.py, data.py      scripted lines, TTS, augmentation, public corpora
     collect.py              guided, consented session (keeps vectors, not audio)
@@ -758,7 +764,7 @@ tests/            python -m unittest discover tests
 examples/
   connect_an_agent.py   how to hook in your own agent: the text seam and the typed one
 docs/
-  system-one-experiments.md   how to test System One and write up the results
+  reflex-experiments.md       how to test Reflex and write up the results
 config.example.yaml    copy to config.yaml
 .env.example            copy to .env
 REPORT.txt              the full technical writeup the numbers above are from
@@ -781,8 +787,8 @@ SHA-256 checksum:
 |---|---|---|---|
 | Silero VAD v6.2.2, Silero Team | voice activity detection | MIT | [snakers4/silero-vad](https://github.com/snakers4/silero-vad) |
 | WeSpeaker ECAPA-TDNN512-LM, WeSpeaker team, trained on VoxCeleb | speaker verification (`enroll.py`) | CC BY 4.0 | [Wespeaker/wespeaker-ecapa-tdnn512-LM](https://huggingface.co/Wespeaker/wespeaker-ecapa-tdnn512-LM) |
-| OpenAI Whisper (via `mlx-community` or `Systran` conversions) | speech-to-text, if you pick a local engine; optionally System One's encoder | MIT | downloaded by `mlx-whisper` / `faster-whisper` |
-| NVIDIA Parakeet TDT-CTC 110M / TDT 0.6B (via `mlx-community`) | speech-to-text (`parakeet`); System One's default encoder | CC BY 4.0 | downloaded by `parakeet-mlx` |
+| OpenAI Whisper (via `mlx-community` or `Systran` conversions) | speech-to-text, if you pick a local engine; optionally Reflex's encoder | MIT | downloaded by `mlx-whisper` / `faster-whisper` |
+| NVIDIA Parakeet TDT-CTC 110M / TDT 0.6B (via `mlx-community`) | speech-to-text (`parakeet`); Reflex's default encoder | CC BY 4.0 | downloaded by `parakeet-mlx` |
 
 If you redistribute any of these, keep their licence and attribution.
 

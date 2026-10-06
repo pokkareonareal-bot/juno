@@ -1,4 +1,4 @@
-"""System One: the typed contract, the router's rules, the student, the wiring.
+"""Reflex: the typed contract, the router's rules, the student, the wiring.
 
 Synthetic vectors and signals only -- no speech, no downloaded model. The
 encoder used here is the numpy log-mel baseline, so these run anywhere.
@@ -20,13 +20,13 @@ from juno_core.slu import data as D
 from juno_core.slu import training as TR
 from juno_core.slu.encoder import LogMelEncoder, parse_spec, pool
 from juno_core.slu.parse import TextParser, parse_duration
+from juno_core.slu.reflex import Reflex
 from juno_core.slu.router import ConversationState, Router, Thresholds
 from juno_core.slu.schema import (
-    ADDRESSEES, ASSISTANT, CORE_SCHEMA, OPEN_REQUEST, Decision, Field, IntentSpec, Schema,
-    SchemaError, SlotSpec, validate_decision,
+    ADDRESSEES, ASSISTANT, CORE_SCHEMA, OPEN_REQUEST, SOURCE_CASCADE, SOURCE_REFLEX, Decision,
+    Field, IntentSpec, Schema, SchemaError, SlotSpec, validate_decision,
 )
 from juno_core.slu.student import OTHER, Prediction, StudentModel, build_targets, fit
-from juno_core.slu.system_one import SystemOne
 
 
 def prediction(assistant=0.9, intent="stop", p_intent=0.95, slots=None):
@@ -73,7 +73,7 @@ class SchemaContract(unittest.TestCase):
         self.assertEqual(merged.intent_names.count(OPEN_REQUEST), 1)
 
     def test_decisions_validate_and_serialise(self):
-        act = Decision(route="act", source="system_one",
+        act = Decision(route="act", source=SOURCE_REFLEX,
                        addressed=Field(ASSISTANT, 0.97, {a: 0.01 for a in ADDRESSEES}),
                        intent=Field("timer.set", 0.9), slots={"duration": Field(420, 0.88)})
         data = json.loads(act.to_json(full=True))
@@ -261,40 +261,63 @@ class FastPath(unittest.TestCase):
         return model, enc
 
     def test_off_by_default_and_safe_when_broken(self):
-        self.assertFalse(SystemOne().enabled)
-        broken = SystemOne({"mode": "on", "model_path": "/nonexistent/model.npz"})
+        self.assertFalse(Reflex().enabled)
+        broken = Reflex({"mode": "on", "model_path": "/nonexistent/model.npz"})
         self.assertFalse(broken.enabled)
         self.assertTrue(broken.error)
 
     def test_mismatched_encoder_is_refused(self):
         model, _ = self.model()
-        s1 = SystemOne({"mode": "on"}, model=model, encoder=LogMelEncoder(n_mels=40))
-        self.assertFalse(s1.enabled)
-        self.assertIn("trained on", s1.error)
+        reflex = Reflex({"mode": "on"}, model=model, encoder=LogMelEncoder(n_mels=40))
+        self.assertFalse(reflex.enabled)
+        self.assertIn("trained on", reflex.error)
 
     def test_decides(self):
         model, enc = self.model()
-        s1 = SystemOne({"mode": "shadow"}, model=model, encoder=enc)
-        self.assertTrue(s1.enabled)
+        reflex = Reflex({"mode": "shadow"}, model=model, encoder=enc)
+        self.assertTrue(reflex.enabled)
         audio = (0.05 * np.random.default_rng(3).standard_normal(16000)).astype(np.float32)
-        d = s1.decide(audio)
+        d = reflex.decide(audio)
         self.assertIn(d.route, ("act", "ignore", "escalate"))
-        self.assertEqual(d.source, "system_one")
+        self.assertEqual(d.source, SOURCE_REFLEX)
         self.assertEqual(validate_decision(d.as_json(), CORE_SCHEMA) if d.route == "act" else [], [])
-        self.assertGreater(d.latency_ms["system_one"], 0.0)
+        self.assertGreater(d.latency_ms[SOURCE_REFLEX], 0.0)
 
     def test_config_only_tightens(self):
         model, enc = self.model()
-        s1 = SystemOne({"mode": "on", "thresholds": {"act_intent": 0.5, "ignore_below": 0.4}},
+        reflex = Reflex({"mode": "on", "thresholds": {"act_intent": 0.5, "ignore_below": 0.4}},
                        model=model, encoder=enc)
-        self.assertEqual(s1.router.thresholds.act_intent, 0.8)
-        self.assertEqual(s1.router.thresholds.ignore_below, 0.2)
+        self.assertEqual(reflex.router.thresholds.act_intent, 0.8)
+        self.assertEqual(reflex.router.thresholds.ignore_below, 0.2)
 
     def test_schema_with_untrained_intents_is_refused(self):
         model, enc = self.model()
         agent = CORE_SCHEMA.extend(Schema.from_dict({"name": "a", "intents": [{"name": "lights.off"}]}))
-        s1 = SystemOne({"mode": "on"}, model=model, encoder=enc, schema=agent)
-        self.assertFalse(s1.enabled)
+        reflex = Reflex({"mode": "on"}, model=model, encoder=enc, schema=agent)
+        self.assertFalse(reflex.enabled)
+
+
+class Renamed(unittest.TestCase):
+    """Reflex SLU was System One and the cascade was System Two. Code written against
+    the old names has to keep working until it has moved."""
+
+    def test_old_import_paths_resolve_to_the_new_classes(self):
+        from juno_core.slu import system_one, teacher
+
+        self.assertIs(system_one.SystemOne, Reflex)
+        self.assertIs(teacher.SystemTwo, teacher.Cascade)
+
+    def test_decision_source_is_what_agents_already_read(self):
+        # These two literals are the contract with agents written before the rename.
+        self.assertEqual((SOURCE_REFLEX, SOURCE_CASCADE), ("system_one", "system_two"))
+
+    def test_decision_accepts_both_spellings_and_emits_one(self):
+        for given, emitted in (("reflex", SOURCE_REFLEX), ("cascade", SOURCE_CASCADE),
+                               (SOURCE_REFLEX, SOURCE_REFLEX), (SOURCE_CASCADE, SOURCE_CASCADE)):
+            d = Decision(route="escalate", source=given, addressed=Field(ASSISTANT, 0.5))
+            self.assertEqual((d.source, d.as_json()["source"]), (emitted, emitted))
+        with self.assertRaises(ValueError):
+            Decision(route="escalate", source="system_three", addressed=Field(ASSISTANT, 0.5))
 
 
 class Encoders(unittest.TestCase):
@@ -390,17 +413,18 @@ class CommandLine(unittest.TestCase):
             self.assertIn("| logmel:64:stats | gold |", (tmp / "sweep" / "sweep.md").read_text())
 
     def test_shadow_report(self):
+        from juno_core.events import SLU_CASCADE
         from juno_core.slu.bench import shadow_report
 
         events = [
             {"event": "slu_decided", "turn": "a", "route": "ignore",
              "addressed": {"value": "human_directed", "p": 0.9, "probs": {ASSISTANT: 0.05}},
-             "latency_ms": {"system_one": 15.0}},
-            {"event": "slu_system_two", "turn": "a", "route": "act", "transcript": "louder",
+             "latency_ms": {SOURCE_REFLEX: 15.0}},
+            {"event": SLU_CASCADE, "turn": "a", "route": "act", "transcript": "louder",
              "intent": {"value": "volume.up", "p": 1.0}},
             {"event": "slu_decided", "turn": "b", "route": "act", "intent": {"value": "stop", "p": 0.97},
-             "slots": {}, "latency_ms": {"system_one": 14.0}},
-            {"event": "slu_system_two", "turn": "b", "route": "act",
+             "slots": {}, "latency_ms": {"reflex": 14.0}},
+            {"event": "slu_cascade", "turn": "b", "route": "act",
              "intent": {"value": "stop", "p": 1.0}, "slots": {}},
         ]
         with tempfile.TemporaryDirectory() as tmp:
@@ -432,13 +456,13 @@ class Pipeline(unittest.TestCase):
                           "vad": {"backend": "energy", "threshold": 0.5, "min_speech_ms": 200,
                                   "min_silence_ms": 550, "min_segment_ms": 350,
                                   "max_segment_ms": 20000},
-                          "intent": {"gate": {"mode": "off"}}, "system_one": {"mode": "off"}})
+                          "intent": {"gate": {"mode": "off"}}, "reflex": {"mode": "off"}})
         p = JunoPipeline(config, stt=FakeSTT(),
                          on_accept=lambda text, d, c: calls["accepted"].append(text),
                          on_decision=(lambda d, c: calls["decisions"].append(d)) if on_decision else None)
         model, enc = FastPath().model()
 
-        class Fixed(SystemOne):
+        class Fixed(Reflex):
             def decide(self, audio, sample_rate=16000, state=None, turn=None):
                 d = super().decide(audio, sample_rate, state, turn)
                 d.route = route
@@ -446,7 +470,7 @@ class Pipeline(unittest.TestCase):
                     d.intent, d.slots = Field("stop", 0.97), {}
                 return d
 
-        p.system_one = Fixed({"mode": mode}, model=model, encoder=enc)
+        p.reflex = Fixed({"mode": mode}, model=model, encoder=enc)
         segment = SpeechSegment(audio=np.zeros(16000, np.float32), start_time=0.0, end_time=1.0,
                                 confidence=0.95)
         p._process_segment(segment)
@@ -459,19 +483,46 @@ class Pipeline(unittest.TestCase):
     def test_on_act_skips_stt_and_delivers(self):
         calls = self.pipeline("on", "act")
         self.assertEqual(calls["stt"], 0)
-        self.assertEqual([d.source for d in calls["decisions"]], ["system_one"])
+        self.assertEqual([d.source for d in calls["decisions"]], [SOURCE_REFLEX])
 
     def test_act_without_a_decision_handler_escalates(self):
         calls = self.pipeline("on", "act", on_decision=False)
         self.assertEqual(calls["stt"], 1)
         self.assertEqual(len(calls["accepted"]), 1)
 
-    def test_escalate_delivers_system_two_with_transcript(self):
+    def test_escalate_delivers_the_cascade_with_transcript(self):
         calls = self.pipeline("on", "escalate")
         self.assertEqual(calls["stt"], 1)
         (d,) = calls["decisions"]
-        self.assertEqual((d.source, d.intent.value), ("system_two", OPEN_REQUEST))
+        self.assertEqual((d.source, d.intent.value), (SOURCE_CASCADE, OPEN_REQUEST))
         self.assertTrue(d.transcript)
+
+    def test_old_config_key_is_still_read(self):
+        from juno_core.config import Section
+        from juno_core.pipeline import _reflex_section
+
+        self.assertEqual(_reflex_section(Section({"system_one": {"mode": "shadow"}})).get("mode"), "shadow")
+        both = Section({"reflex": {"mode": "on"}, "system_one": {"mode": "shadow"}})
+        self.assertEqual(_reflex_section(both).get("mode"), "on")          # the new key wins
+        self.assertEqual(_reflex_section(Section({})).get("mode"), None)
+        self.assertEqual(_reflex_section(None).get("mode"), None)
+
+    def test_old_attribute_names_alias_the_new_ones(self):
+        from juno_core.config import Section
+        from juno_core.pipeline import JunoPipeline
+        from juno_core.stt import STTEngine
+
+        class NoSTT(STTEngine):
+            def transcribe(self, audio, sample_rate=16000):
+                raise AssertionError("not used")
+
+        p = JunoPipeline(Section({"audio": {"sample_rate": 16000, "channels": 1, "frame_ms": 32},
+                                  "vad": {"backend": "energy", "threshold": 0.5, "min_speech_ms": 200,
+                                          "min_silence_ms": 550, "min_segment_ms": 350,
+                                          "max_segment_ms": 20000},
+                                  "intent": {"gate": {"mode": "off"}}}), stt=NoSTT())
+        self.assertIs(p.system_one, p.reflex)
+        self.assertIs(p.system_two, p.cascade)
 
     def test_shadow_changes_nothing(self):
         calls = self.pipeline("shadow", "ignore")

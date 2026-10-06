@@ -1,12 +1,12 @@
-"""System Two: speech-to-text, then the text-side engines, answering in the schema.
+"""The cascade: speech-to-text, then the text-side engines, answering in the schema.
 
 This is the expensive path Juno already had -- transcribe, decide whether it
 was meant for us (intent.py, with its language-model second opinion), and
 now also say WHAT was meant (parse.py) -- wrapped so that it produces the
-same typed Decision System One does. It has two jobs:
+same typed Decision Reflex does. It has two jobs:
 
-  1. At runtime, it is where System One escalates to. The agent receives its
-     Decision with ``source: system_two`` and the transcript attached.
+  1. At runtime, it is where Reflex escalates to. The agent receives its
+     Decision (``source`` is ``SOURCE_CASCADE``) and the transcript attached.
   2. Offline, it is the TEACHER. ``Teacher.label`` runs it over a clip and
      returns its full, soft answer -- the probabilities, not just the top
      choice -- which is what the student is trained to reproduce.
@@ -35,7 +35,7 @@ from juno_core.intelligence.context import ConversationContext
 from juno_core.intelligence.intent import IntentDecision, IntentEngine
 from juno_core.slu.parse import TextParse, TextParser
 from juno_core.slu.schema import (
-    ADDRESSEES, ASSISTANT, CORE_SCHEMA, OPEN_REQUEST, Decision, Field, Schema,
+    ADDRESSEES, ASSISTANT, CORE_SCHEMA, OPEN_REQUEST, SOURCE_CASCADE, Decision, Field, Schema,
 )
 
 
@@ -52,7 +52,7 @@ def addressed_distribution(decision: IntentDecision | None, text: str,
             "background_or_media": (1 - p) * (1 - human_share)}
 
 
-class SystemTwo:
+class Cascade:
     """Turns (transcript, intent verdict) into a typed Decision."""
 
     def __init__(self, schema: Schema = CORE_SCHEMA, assistant_name: str = "Juno",
@@ -69,7 +69,7 @@ class SystemTwo:
             (a for a in ADDRESSEES if a != ASSISTANT), key=lambda a: dist[a])
         addressed = Field(who, dist[who], dist)
         if not accepted:
-            return Decision(route="ignore", source="system_two", addressed=addressed,
+            return Decision(route="ignore", source=SOURCE_CASCADE, addressed=addressed,
                             transcript=text or None, turn=turn,
                             reason="the intent engine says it was not for the assistant",
                             latency_ms=dict(latency_ms or {}), detail=verdict)
@@ -81,10 +81,13 @@ class SystemTwo:
                 s.required and s.name not in slots for s in spec.slots):
             parsed = TextParse(OPEN_REQUEST, parsed.p, {}, parsed.method, parsed.normalised)
             slots, reason = {}, "a required slot was not said"
-        return Decision(route="act", source="system_two", addressed=addressed,
+        return Decision(route="act", source=SOURCE_CASCADE, addressed=addressed,
                         intent=Field(parsed.intent, parsed.p), slots=slots,
                         transcript=text, turn=turn, reason=reason,
                         latency_ms=dict(latency_ms or {}), detail=verdict)
+
+
+SystemTwo = Cascade   # the class's old name, for code written before the rename
 
 
 @dataclass
@@ -127,7 +130,7 @@ class Teacher:
 
     Two ways to judge the words:
 
-      engine  the runtime's intent engine and parser, exactly as System Two
+      engine  the runtime's intent engine and parser, exactly as the cascade
               runs them (the first teacher -- conservative when cold);
       judge   a language model asked who it was for and what was wanted, as
               probabilities (judge.py), blended with the engine's verdict by
@@ -149,7 +152,7 @@ class Teacher:
         self.judge = judge
         self.judge_weight = float(judge_weight)
         aliases = self.intent_config.get("assistant_aliases") or ()
-        self.system_two = SystemTwo(schema or CORE_SCHEMA, assistant_name, model, aliases)
+        self.cascade = Cascade(schema or CORE_SCHEMA, assistant_name, model, aliases)
 
     @property
     def name(self) -> str:
@@ -176,10 +179,10 @@ class Teacher:
             engine = IntentEngine(self.intent_config, ConversationContext(), model=self.model,
                                   assistant_name=self.assistant_name)
             verdict = engine.classify(text, reliable=reliable, tail_reliable=tail_reliable)
-        decision = self.system_two.decide(text, verdict, reliable=reliable)
+        decision = self.cascade.decide(text, verdict, reliable=reliable)
         # The intent head is taught on what the words say whether or not the
         # engine accepted them -- build_targets masks by p(assistant) later.
-        parsed = self.system_two.parser.parse(text) if text else None
+        parsed = self.cascade.parser.parse(text) if text else None
         addressed = dict(decision.addressed.probs or {})
         intent = parsed.intent if parsed else None
         intent_p = float(parsed.p) if parsed else 0.0
@@ -213,7 +216,7 @@ class Teacher:
                     intent_probs = {k: 0.1 * v for k, v in intent_probs.items()}
                     intent_probs[intent] = intent_probs.get(intent, 0.0) + 0.9
                 else:
-                    spec = self.system_two.schema.intent(top)
+                    spec = self.cascade.schema.intent(top)
                     needs = [s.name for s in spec.slots if s.required] if spec else []
                     if spec is not None and not any(n not in slots for n in needs):
                         intent, intent_p = top, float(j.intent[top])

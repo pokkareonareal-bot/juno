@@ -1,4 +1,4 @@
-"""The live benchmark: System One against always-transcribe, clip by clip.
+"""The live benchmark: Reflex against always-transcribe, clip by clip.
 
     python -m juno_core.slu bench --rows data/slu/test.jsonl --model model.npz \\
         --fallback-stt parakeet-110m \\
@@ -10,9 +10,9 @@ is timed end to end on this machine -- nothing here is estimated from stored
 numbers (``train``/``evaluate`` do that, cheaply, for model selection; this
 is the measurement for the report). Systems:
 
-  always:<stt>          System Two on every clip: transcribe, intent engine,
+  always:<stt>          the cascade on every clip: transcribe, intent engine,
                         parser. Today's Juno, with that recogniser.
-  system_one+<stt>      System One on every clip; System Two with <stt> only
+  reflex+<stt>          Reflex on every clip; the cascade with <stt> only
                         on what it escalates.
 
 Per system: end-to-end correctness against the gold labels, false
@@ -37,22 +37,23 @@ from pathlib import Path
 
 import numpy as np
 
+from juno_core.events import CASCADE_EVENTS
 from juno_core.slu import data as D
-from juno_core.slu.schema import ASSISTANT, OPEN_REQUEST
+from juno_core.slu.schema import ASSISTANT, OPEN_REQUEST, SOURCE_REFLEX
 
 
 def add_bench_args(s) -> None:
     s.add_argument("--rows", nargs="+", required=True, help="labelled (or gold-only) manifests")
-    s.add_argument("--model", help="System One student (.npz); omit to run baselines only")
+    s.add_argument("--model", help="Reflex student (.npz); omit to run baselines only")
     s.add_argument("--fallback-stt", default="parakeet-110m",
-                   help="the recogniser System Two uses when System One escalates")
+                   help="the recogniser the cascade uses when Reflex escalates")
     s.add_argument("--baselines", nargs="*", default=["parakeet-110m", "whisper:small.en"],
                    help="always-transcribe systems: parakeet-110m | parakeet-0.6b | whisper:<model>")
     s.add_argument("--only-holdout", action="store_true",
                    help="only the clips held out when --model was trained")
     s.add_argument("--limit", type=int, default=0)
     s.add_argument("--seed", type=int, default=0)
-    s.add_argument("--llm", help="adjudicator provider for System Two (adds network latency)")
+    s.add_argument("--llm", help="adjudicator provider for the cascade (adds network latency)")
     s.add_argument("--name", default="Juno")
     s.add_argument("--out", help="JSON report")
     s.add_argument("--csv", help="one line per (system, clip)")
@@ -140,28 +141,28 @@ def bench_main(args) -> int:
         def run_always(audio, t=t):
             label = t.label(audio)
             kind = "act" if label.accepted else "ignore"
-            return kind, label.intent if label.accepted else None, label.slots, True, "system_two"
+            return kind, label.intent if label.accepted else None, label.slots, True, "cascade"
         systems.append(_System(f"always:{name}", run_always))
 
     if model is not None:
-        from juno_core.slu.system_one import SystemOne
+        from juno_core.slu.reflex import Reflex
 
-        s1 = SystemOne({"mode": "on"}, model=model)
-        if not s1.enabled:
-            raise SystemExit(f"System One failed to load: {s1.error}")
-        s1.warmup()
+        reflex = Reflex({"mode": "on"}, model=model)
+        if not reflex.enabled:
+            raise SystemExit(f"Reflex failed to load: {reflex.error}")
+        reflex.warmup()
         fallback = teacher(args.fallback_stt)
 
         def run_hybrid(audio):
-            d = s1.decide(audio)
+            d = reflex.decide(audio)
             if d.route == "ignore":
-                return "ignore", None, {}, False, "system_one"
+                return "ignore", None, {}, False, "reflex"
             if d.route == "act":
-                return "act", d.intent.value, {k: v.value for k, v in d.slots.items()}, False, "system_one"
+                return "act", d.intent.value, {k: v.value for k, v in d.slots.items()}, False, "reflex"
             label = fallback.label(audio)
             kind = "act" if label.accepted else "ignore"
-            return kind, label.intent if label.accepted else None, label.slots, True, "system_two"
-        systems.append(_System(f"system_one+{args.fallback_stt}", run_hybrid))
+            return kind, label.intent if label.accepted else None, label.slots, True, "cascade"
+        systems.append(_System(f"reflex+{args.fallback_stt}", run_hybrid))
 
     per_clip = []
     report = {"clips": len(rows), "machine": _machine(), "systems": {}}
@@ -262,8 +263,17 @@ def _machine() -> dict:
 
 # -- the shadow log ---------------------------------------------------------------
 
+def _reflex_ms(latency: dict | None) -> float | None:
+    """Reflex's own latency from a logged decision, under whichever spelling the log used."""
+    latency = latency or {}
+    for key in (SOURCE_REFLEX, "reflex", "system_one"):
+        if latency.get(key) is not None:
+            return latency[key]
+    return None
+
+
 def shadow_report(path: str | Path) -> dict:
-    """System One's decision next to System Two's, for every turn both scored."""
+    """Reflex's decision next to the cascade's, for every turn both scored."""
     turns: dict[str, dict] = defaultdict(dict)
     with open(path, encoding="utf-8") as handle:
         for line in handle:
@@ -276,22 +286,22 @@ def shadow_report(path: str | Path) -> dict:
                 continue
             if event.get("event") == "slu_decided":
                 turns[turn]["one"] = event
-            elif event.get("event") == "slu_system_two":
+            elif event.get("event") in CASCADE_EVENTS:
                 turns[turn]["two"] = event
     pairs = [(t, v["one"], v.get("two")) for t, v in turns.items() if "one" in v]
     matrix = Counter()
     dangerous, latency = [], []
     for turn, one, two in pairs:
-        latency.append((one.get("latency_ms") or {}).get("system_one"))
-        # In mode "on", System Two only runs on escalations.
-        verdict = "system_two_not_run" if two is None else two.get("route")
+        latency.append(_reflex_ms(one.get("latency_ms")))
+        # In mode "on", the cascade only runs on escalations.
+        verdict = "cascade_not_run" if two is None else two.get("route")
         matrix[(one.get("route"), verdict)] += 1
         if two is None:
             continue
         if one.get("route") == "ignore" and two.get("route") == "act":
             dangerous.append({"turn": turn, "kind": "would_have_missed",
                               "p_assistant": (one.get("addressed") or {}).get("probs", {}).get(ASSISTANT),
-                              "system_two": two.get("transcript")})
+                              "cascade": two.get("transcript")})
         elif one.get("route") == "act":
             one_intent = (one.get("intent") or {}).get("value")
             two_intent = (two.get("intent") or {}).get("value")
@@ -299,11 +309,11 @@ def shadow_report(path: str | Path) -> dict:
             two_slots = {k: v.get("value") for k, v in (two.get("slots") or {}).items()}
             if two.get("route") != "act":
                 dangerous.append({"turn": turn, "kind": "would_have_acted_on_ignored",
-                                  "acted_as": one_intent, "system_two": two.get("transcript")})
+                                  "acted_as": one_intent, "cascade": two.get("transcript")})
             elif one_intent != two_intent or one_slots != two_slots:
                 dangerous.append({"turn": turn, "kind": "would_have_acted_differently",
                                   "acted_as": [one_intent, one_slots],
-                                  "system_two": [two_intent, two_slots],
+                                  "cascade": [two_intent, two_slots],
                                   "transcript": two.get("transcript")})
     lat = [v for v in latency if v is not None]
     return {
@@ -311,6 +321,6 @@ def shadow_report(path: str | Path) -> dict:
         "agreement": {f"{a} / {b}": n for (a, b), n in sorted(matrix.items())},
         "would_have_avoided_stt": sum(n for (a, _), n in matrix.items() if a in ("act", "ignore")),
         "disagreements_that_matter": dangerous,
-        "system_one_ms": {"p50": round(float(np.percentile(lat, 50)), 2) if lat else None,
-                          "p95": round(float(np.percentile(lat, 95)), 2) if lat else None},
+        "reflex_ms": {"p50": round(float(np.percentile(lat, 50)), 2) if lat else None,
+                      "p95": round(float(np.percentile(lat, 95)), 2) if lat else None},
     }

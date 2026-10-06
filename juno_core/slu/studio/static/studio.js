@@ -150,9 +150,9 @@ function renderChips() {
       h("span", { class: "dot" + (S.model ? " ok" : "") }),
       h("span", { class: "k", text: "Model" }),
       h("span", { class: "v", text: S.model ? S.model.name : "none" })),
-    h("span", { class: "chip", title: "System Two: speech-to-text + the intent engine" },
+    h("span", { class: "chip", title: "The cascade: speech-to-text + the intent engine" },
       h("span", { class: "dot " + teacherDot }),
-      h("span", { class: "k", text: "System Two" }),
+      h("span", { class: "k", text: "Cascade" }),
       h("span", { class: "v", text: S.teacher })),
   );
 }
@@ -193,8 +193,8 @@ function renderTry() {
   $("#try-stats").replaceChildren(
     stat(st.utterances, "utterances"),
     stat(pct(st.stt_avoided), "handled without STT"),
-    stat(st.agreement === null ? "–" : pct(st.agreement), "agree with System Two"),
-    stat(st.s1_ms_p50 === null ? "–" : `${st.s1_ms_p50} ms`, "System One, median"),
+    stat(st.agreement === null ? "–" : pct(st.agreement), "agree with the cascade"),
+    stat(st.reflex_ms_p50 === null ? "–" : `${st.reflex_ms_p50} ms`, "Reflex, median"),
   );
   $("#label-count").textContent = S.labelled;
   $("#save-labels").disabled = !S.labelled;
@@ -212,20 +212,20 @@ function renderTry() {
   $("#model-meta").textContent = m
     ? `${m.targets || "?"} labels · ${shortEnc(m.encoder)} · held-out: ${pct(m.holdout.stt_avoided)} handled without STT, ` +
       `${pct(m.holdout.false_activation, 1)} false activations` + (m.distributable ? "" : " · not distributable")
-    : "Without a model, only System Two runs: you'll see transcripts but no System One decisions.";
+    : "Without a model, only the cascade runs: you'll see transcripts but no Reflex decisions.";
 }
 
 const stat = (n, l) => h("div", { class: "stat" }, h("div", { class: "n", text: n }), h("div", { class: "l", text: l }));
 const shortEnc = (e) => (e || "").replace("mlx-community/", "").replace(":stats", "");
 
 const AGREE = {
-  agree: ["good", "✓ Agrees with System Two"],
-  s1_would_miss: ["bad", "System One dropped something System Two accepted"],
-  s1_would_act_on_ignored: ["bad", "System One acted on something System Two ignored"],
-  different_intent: ["bad", "Different answer from System Two"],
-  escalated: ["meh", "Escalated, so System Two decided"],
-  no_model: ["meh", "No model: System Two only"],
-  no_teacher: ["meh", "System Two still loading"],
+  agree: ["good", "✓ Agrees with the cascade"],
+  reflex_would_miss: ["bad", "Reflex dropped something the cascade accepted"],
+  reflex_would_act_on_ignored: ["bad", "Reflex acted on something the cascade ignored"],
+  different_intent: ["bad", "Different answer from the cascade"],
+  escalated: ["meh", "Escalated, so the cascade decided"],
+  no_model: ["meh", "No model: the cascade only"],
+  no_teacher: ["meh", "Cascade still loading"],
 };
 
 function addUtterance(u) {
@@ -239,51 +239,51 @@ function addUtterance(u) {
 }
 
 function utteranceCard(u) {
-  const s1 = u.system_one;
-  const s2 = u.system_two;
-  const route = s1 ? s1.route : "none";
-  const intent = s1 && s1.intent ? s1.intent : null;
-  const headText = !s1 ? "no model" : route === "ignore" ? `not for Juno` : intent ? intent.value : "";
+  const reflex = u.reflex;
+  const cascade = u.cascade;
+  const route = reflex ? reflex.route : "none";
+  const intent = reflex && reflex.intent ? reflex.intent : null;
+  const headText = !reflex ? "no model" : route === "ignore" ? `not for Juno` : intent ? intent.value : "";
   const head = h("div", { class: "utt-head" },
     h("span", { class: `r ${route}`, text: route === "none" ? "—" : route.toUpperCase() }),
     h("span", { class: "intent", text: headText }),
-    s1 && route !== "ignore" && intent ? h("span", { class: "p", text: pct(intent.p) }) : null,
-    s1 && route === "ignore" ? h("span", { class: "p", text: `${pct(1 - (s1.addressed.probs || {}).assistant_directed)} sure` }) : null,
-    s1 && Object.keys(s1.slots || {}).length ? h("span", { class: "p", text: slotText(s1.slots) }) : null,
-    h("span", { class: "meta", text: [s1 ? `${s1.latency_ms.system_one.toFixed(0)} ms` : null, u.at, `${u.duration} s`].filter(Boolean).join(" · ") }),
+    reflex && route !== "ignore" && intent ? h("span", { class: "p", text: pct(intent.p) }) : null,
+    reflex && route === "ignore" ? h("span", { class: "p", text: `${pct(1 - (reflex.addressed.probs || {}).assistant_directed)} sure` }) : null,
+    reflex && Object.keys(reflex.slots || {}).length ? h("span", { class: "p", text: slotText(reflex.slots) }) : null,
+    h("span", { class: "meta", text: [reflex ? `${reflex.ms.toFixed(0)} ms` : null, u.at, `${u.duration} s`].filter(Boolean).join(" · ") }),
   );
 
   const body = h("div", { class: "utt-body" });
-  if (s1) {
-    const probs = s1.addressed.probs || {};
+  if (reflex) {
+    const probs = reflex.addressed.probs || {};
     body.append(
-      h("div", { class: "who-bar", title: "who it was for, according to System One" },
+      h("div", { class: "who-bar", title: "who it was for, according to Reflex" },
         ...Object.keys(LABELS).map((k) => h("span", { style: `width:${(100 * (probs[k] || 0)).toFixed(1)}%;background:${COLORS[k]}` }))),
       h("div", { class: "who-legend" },
         ...Object.keys(LABELS).map((k) => h("span", {}, h("i", { style: `background:${COLORS[k]}` }), `${LABELS[k]} ${pct(probs[k])}`))),
     );
-    if (route !== "ignore" && s1.intent_top) {
-      body.append(h("div", { class: "alts", text: "top intents: " + s1.intent_top.map(([n, p]) => `${n} ${p.toFixed(2)}`).join(" · ") }));
+    if (route !== "ignore" && reflex.intent_top) {
+      body.append(h("div", { class: "alts", text: "top intents: " + reflex.intent_top.map(([n, p]) => `${n} ${p.toFixed(2)}`).join(" · ") }));
     }
-    if (s1.reason && route === "escalate") body.append(h("div", { class: "alts", text: `why escalate: ${s1.reason}` }));
+    if (reflex.reason && route === "escalate") body.append(h("div", { class: "alts", text: `why escalate: ${reflex.reason}` }));
   }
 
   const [cls, text] = AGREE[u.agreement] || ["meh", u.agreement];
-  const s2row = h("div", { class: "s2" },
-    h("span", { class: "k", text: "System Two heard" }),
-    h("span", { class: "heard", text: s2 ? `“${s2.transcript || "(nothing)"}”` : "…" }),
-    s2 ? h("span", { class: "verdict", text: s2.accepted
-      ? `for Juno · ${s2.intent || "?"}${Object.keys(s2.slots || {}).length ? " · " + slotText(s2.slots) : ""} · ${Math.round(s2.stt_ms)} ms`
-      : `not for Juno · ${Math.round(s2.stt_ms)} ms` }) : null,
+  const cascadeRow = h("div", { class: "cascade" },
+    h("span", { class: "k", text: "Cascade heard" }),
+    h("span", { class: "heard", text: cascade ? `“${cascade.transcript || "(nothing)"}”` : "…" }),
+    cascade ? h("span", { class: "verdict", text: cascade.accepted
+      ? `for Juno · ${cascade.intent || "?"}${Object.keys(cascade.slots || {}).length ? " · " + slotText(cascade.slots) : ""} · ${Math.round(cascade.stt_ms)} ms`
+      : `not for Juno · ${Math.round(cascade.stt_ms)} ms` }) : null,
     h("span", { class: `agree ${cls}`, text }),
   );
 
-  return h("article", { class: "card utt", "data-id": u.id }, head, s1 ? body : null, s2row, labeler(u));
+  return h("article", { class: "card utt", "data-id": u.id }, head, reflex ? body : null, cascadeRow, labeler(u));
 }
 
 function labeler(u) {
   const box = h("div", { class: "labeler" });
-  const guess = (u.system_two && u.system_two.intent) || (u.system_one && u.system_one.intent && u.system_one.intent.value) || "open_request";
+  const guess = (u.cascade && u.cascade.intent) || (u.reflex && u.reflex.intent && u.reflex.intent.value) || "open_request";
   let choice = null;
   const intentSel = h("select", { "aria-label": "intent", hidden: true },
     ...(S ? S.intents : []).map((i) => h("option", { value: i, text: i, selected: i === guess })));
@@ -357,7 +357,7 @@ function renderPrompt(sess) {
       h("span", { class: "step-n", text: `prompt ${step.index + 1} of ${sess.steps.length}` })),
     h("p", { class: "text", text: step.text }),
     h("p", { class: "intent-tag", text: step.label === "assistant_directed"
-      ? `labelled as: ${step.intent || "whatever command System Two hears"}`
+      ? `labelled as: ${step.intent || "whatever command the cascade hears"}`
       : `labelled as: ${LABELS[step.label].toLowerCase()}` }),
     recordingThis
       ? h("div", {},
@@ -393,7 +393,7 @@ function renderFree(sess) {
   const lab = $("#fr-label"), intent = $("#fr-intent"), spk = $("#fr-speaker");
   if (lab.dataset.init !== sess.id) {
     lab.replaceChildren(...Object.entries(LABELS).map(([k, v]) => h("option", { value: k, text: v })));
-    intent.replaceChildren(h("option", { value: "", text: "(System Two decides)" }),
+    intent.replaceChildren(h("option", { value: "", text: "(cascade decides)" }),
       ...S.intents.map((i) => h("option", { value: i, text: i })));
     const speakers = [...sess.speakers];
     if (sess.speakers.length > 1) speakers.push(sess.speakers.join("+"));
@@ -414,8 +414,8 @@ function renderHeard(sess) {
   const segs = [...sess.segments].reverse();
   list.replaceChildren(...(segs.length ? segs.map((r) => {
     let warn = null;
-    if (r.g_addressed === "assistant_directed" && r.t_accept === false) warn = "System Two didn't think this was for Juno";
-    if (r.g_addressed !== "assistant_directed" && r.t_accept) warn = "System Two would have answered this";
+    if (r.g_addressed === "assistant_directed" && r.t_accept === false) warn = "The cascade didn't think this was for Juno";
+    if (r.g_addressed !== "assistant_directed" && r.t_accept) warn = "The cascade would have answered this";
     return h("li", {},
       h("span", { class: "dotc", style: `background:${COLORS[r.g_addressed]}` }),
       h("div", {},
@@ -502,7 +502,7 @@ function renderReport(r, into) {
     r.intent_confusions && r.intent_confusions.length ? h("div", {}, h("h4", { text: "Most-confused intents" }), h("table", { class: "t" },
       h("thead", {}, h("tr", {}, h("th", { text: "said" }), h("th", { text: "heard as" }), h("th", { text: "n" }))),
       h("tbody", {}, ...r.intent_confusions.map((c) => h("tr", {}, h("td", { class: "mono", text: c.true }), h("td", { class: "mono", text: c.predicted }), h("td", { text: c.n })))))) : null,
-    r.teacher_vs_gold ? h("p", { class: "hint", text: `For comparison, System Two on these utterances: ${pct(r.teacher_vs_gold.addressed_binary_accuracy, 1)} right about who they were for, ${pct(r.teacher_vs_gold.missed.rate, 1)} of requests missed, ${pct(r.teacher_vs_gold.false_activation.rate, 1)} false activations.` }) : null,
+    r.teacher_vs_gold ? h("p", { class: "hint", text: `For comparison, the cascade on these utterances: ${pct(r.teacher_vs_gold.addressed_binary_accuracy, 1)} right about who they were for, ${pct(r.teacher_vs_gold.missed.rate, 1)} of requests missed, ${pct(r.teacher_vs_gold.false_activation.rate, 1)} false activations.` }) : null,
   );
 }
 

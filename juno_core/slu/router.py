@@ -2,7 +2,7 @@
 
 The student says how likely each answer is. This decides what Juno DOES
 with that, and it is deliberately the only place that decides, so every
-rule about when System One may act alone is in one short file.
+rule about when Reflex may act alone is in one short file.
 
     ignore    p(assistant_directed) below ``ignore_below``, and nothing about
               the conversation says the next words are likely ours

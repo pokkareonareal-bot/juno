@@ -6,9 +6,9 @@ at similar English accuracy -- measured on an M1 for a 2.6 s command:
 45 ms for the 110M model and 85 ms for 0.6B, against 354 ms for Whisper
 small.en and 1350 ms for large-v3-turbo. English only.
 
-It is also the speech recogniser System One's default encoder comes from
+It is also the speech recogniser Reflex's default encoder comes from
 (juno_core/slu/encoder.py), which is what makes it the honest baseline for
-benchmarking System One: "skip STT" means less when STT is already cheap.
+benchmarking Reflex: "skip STT" means less when STT is already cheap.
 
     stt:
       provider: parakeet

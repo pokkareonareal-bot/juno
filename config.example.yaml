@@ -104,16 +104,17 @@ intent:
     log_features: false             # also log the 20 feature NUMBERS per segment
                                      # (never audio), for offline comparison
 
-# --- System One: understanding from the audio itself (optional) --------------
+# --- Reflex SLU: understanding from the audio itself (optional) ----------
 # A small model that listens to each utterance WITHOUT transcribing it and
 # answers, as typed JSON, "was that for me?" and "what was wanted?". Confident
 # and simple -> handled with no speech-to-text at all; not for Juno -> dropped;
-# anything else -> escalated to the transcribe-and-read path above, which
-# answers in the same JSON. See README, "System One", for training a model --
+# anything else -> escalated to the cascade (the transcribe-and-read path
+# above), which answers in the same JSON. See README, "Reflex SLU", for
+# training a model --
 # none ships, because a useful one has to be trained on data you may use.
-system_one:
-  mode: "off"                       # off | shadow (runs and logs next to the old
-                                     # path, changes nothing) | on (acts on its routes)
+reflex:                             # formerly "system_one:", still read if present
+  mode: "off"                       # off | shadow (runs and logs next to the cascade,
+                                     # changes nothing) | on (acts on its routes)
   model_path: null                  # null -> juno_core/data/models/slu_student.npz
   followup_window: 20.0             # seconds after Juno spoke when "ignore" is vetoed
   # Optional: TIGHTEN the thresholds the model file measured (never loosen):

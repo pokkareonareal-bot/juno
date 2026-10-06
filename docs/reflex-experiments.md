@@ -1,6 +1,6 @@
-# Testing System One: how to run a real experiment
+# Testing Reflex: how to run a real experiment
 
-This is a guide to measuring Juno's System One yourself and writing it up
+This is a guide to measuring Juno's Reflex yourself and writing it up
 honestly. It covers what the claim is, what to compare it against, the exact
 commands, which numbers to report, and what can make the results misleading.
 
@@ -11,8 +11,8 @@ Every command runs from the repo root, inside the project's virtualenv
 
 ## 1. The claim, stated so it can fail
 
-> A small audio-only model (System One), trained by distillation from the
-> transcribe-then-read pipeline (System Two), can decide **who an utterance
+> A small audio-only model (Reflex), trained by distillation from the
+> transcribe-then-read pipeline (the cascade), can decide **who an utterance
 > was for** and **what was wanted** well enough to skip speech-to-text on a
 > meaningful share of utterances. It does this without more false
 > activations or missed requests than always transcribing, and with lower
@@ -22,7 +22,7 @@ Break it into hypotheses, each with a number that would refute it:
 
 | | Hypothesis | Refuted if (suggested bar) |
 |---|---|---|
-| H1 | System One avoids STT on a meaningful share of utterances | `stt_avoided` < 30% at the budgets below |
+| H1 | Reflex avoids STT on a meaningful share of utterances | `stt_avoided` < 30% at the budgets below |
 | H2 | It stays safe | false-ignore > 1% or false-activation > 1% on held-out data (watch the 95% upper bound, not just the point estimate) |
 | H3 | End to end it is no worse than always transcribing | hybrid correctness more than 1 point below the best always-transcribe baseline |
 | H4 | Typed commands get faster | typed-command p50 latency not lower than always-transcribe with **Parakeet** (the fast baseline, not Whisper) |
@@ -45,7 +45,7 @@ same session**. `bench` does this for you.
 |---|---|
 | `always:whisper:small.en` | Juno's default today. The "before" picture. |
 | `always:whisper:large-v3-turbo` | Accuracy reference: the strongest local recogniser. |
-| `always:parakeet-110m` | **The baseline that matters.** STT is already cheap here (~45 ms on an M1). If System One only beats Whisper, the result is about Whisper being slow, not about skipping STT. |
+| `always:parakeet-110m` | **The baseline that matters.** STT is already cheap here (~45 ms on an M1). If Reflex only beats Whisper, the result is about Whisper being slow, not about skipping STT. |
 | `always:parakeet-0.6b` | Strong and still fast. Also the default teacher. |
 
 ### Prior "skip STT" approaches already in this repo
@@ -53,9 +53,9 @@ same session**. `bench` does this for you.
 | Name | How to get it |
 |---|---|
 | Rule gate | `intent.gate.mode: skip`, rules only. It skips about 3% of real-log traffic (README, "The numbers"). |
-| Learned feature gate | The `gate` encoder: the same 20 features the learned gate reads, under the same student, splits and thresholds as System One. It's the honest "simple model" baseline, and unlike `gate_training` it's trained on exactly the same rows. |
+| Learned feature gate | The `gate` encoder: the same 20 features the learned gate reads, under the same student, splits and thresholds as Reflex. It's the honest "simple model" baseline, and unlike `gate_training` it's trained on exactly the same rows. |
 
-### Ablations of System One itself
+### Ablations of Reflex itself
 
 Change one thing at a time, keep the split and seed fixed:
 
@@ -111,8 +111,8 @@ python -m juno_core.slu collect --out data/slu/consented/s1 --speakers p1,p2 \
 Or do step 4 in a browser: `python -m juno_core.slu studio`, then the
 **Collect** tab. Sessions land in `data/slu/studio/` in the same format, and
 the **Results** tab evaluates and trains on them. The studio's **Try it** tab
-is also the quickest qualitative check: speak, and watch System One's
-decision next to System Two's for every utterance.
+is also the quickest qualitative check: speak, and watch Reflex's
+decision next to the cascade's for every utterance.
 
 Nothing writes audio except the TTS engine itself. Augmented copies, AMI
 utterances, and noise clips are recipes in the manifest, rebuilt in memory.
@@ -167,12 +167,12 @@ python -m juno_core.slu sweep --rows data/slu/labelled.jsonl --emb-dirs data/slu
 # or one student at a time
 python -m juno_core.slu train --rows data/slu/labelled.jsonl \
     --embeddings data/slu/emb/parakeet__mlx-community_parakeet-tdt_ctc-110m_L17__stats.npz \
-    --targets mix --allow-internal --out models/s1-parakeet-mix.npz \
-    --report reports/s1-parakeet-mix.holdout.json
+    --targets mix --allow-internal --out models/reflex-parakeet-mix.npz \
+    --report reports/reflex-parakeet-mix.holdout.json
 
 # the live benchmark: every system on the holdout clips, timed end to end
 python -m juno_core.slu bench --rows data/slu/labelled.jsonl --only-holdout \
-    --model models/s1-parakeet-mix.npz --fallback-stt parakeet-110m \
+    --model models/reflex-parakeet-mix.npz --fallback-stt parakeet-110m \
     --baselines parakeet-110m parakeet-0.6b whisper:small.en whisper:large-v3-turbo \
     --out reports/bench.json --csv reports/bench.csv
 ```
@@ -206,12 +206,12 @@ entry, or `--baselines` empty plus `--model`) so the windows don't overlap.
 The offline numbers come from clips. The real test is days of your own use:
 
 ```yaml
-system_one:
+reflex:
   mode: shadow
-  model_path: models/s1-parakeet-mix.npz
+  model_path: models/reflex-parakeet-mix.npz
 ```
 
-Every turn then logs System One's decision next to System Two's, and
+Every turn then logs Reflex's decision next to the cascade's, and
 nothing changes for you. Afterwards:
 
 ```bash
@@ -222,7 +222,7 @@ That gives you the agreement matrix, how many turns would have skipped STT,
 and every disagreement that matters: `would_have_missed`,
 `would_have_acted_on_ignored`, `would_have_acted_differently`. This is the
 most convincing evidence you can put in a report, because nobody staged it.
-Note that System Two is the reference here, not ground truth. Hand-check
+Note that the cascade is the reference here, not ground truth. Hand-check
 the disagreements.
 
 ---
@@ -237,7 +237,7 @@ the disagreements.
 | always: whisper large-v3-turbo | | | | 0% | | | | |
 | always: parakeet-110m | | | | 0% | | | | |
 | always: parakeet-0.6b | | | | 0% | | | | |
-| System One + parakeet-110m | | | | | | | | |
+| Reflex + parakeet-110m | | | | | | | | |
 
 All of these come from `bench.json` → `systems.*`.
 
@@ -340,7 +340,7 @@ commands above; the sweep table is `reports/sweep/sweep.md`.
 | H1 coverage | **supported on this data** | 48% ± 3 of STT avoided (sweep, Parakeet 17 layers, gold); 47% in the live bench |
 | H2 safety | **mostly** | student false-ignore 0.4%, false-activation 0.0%; wrong acts 1.1% ± 1.1%, all of seed 0's being "unpause" → `media.pause` |
 | H3 accuracy | **supported, with a caveat** | hybrid 70.0% correct vs 66.7% for the best always-transcribe (Whisper turbo). The caveat: template overlap between train and test. |
-| H4 latency | **split** | decided-by-System-One clips: 16 ms p50 vs 36 ms (Parakeet 110M) / 315 ms (Whisper small). But typed-command p50 overall is *not* lower than always-Parakeet, because over half of them escalate and pay both. Compute per utterance: −33% vs Whisper small, −8% vs Parakeet 110M. |
+| H4 latency | **split** | decided-by-Reflex clips: 16 ms p50 vs 36 ms (Parakeet 110M) / 315 ms (Whisper small). But typed-command p50 overall is *not* lower than always-Parakeet, because over half of them escalate and pay both. Compute per utterance: −33% vs Whisper small, −8% vs Parakeet 110M. |
 | H5 distillation | **refuted with the first teacher; partly rescued by a better one** | first teacher (the cold engine): teacher-only targets 1% avoided, AUC 0.74; mix 34%; gold 48%. With the language-model judge (`relabel --judge mlx`): teacher-only 8% ± 5, AUC 0.85; mix 40% ± 8; the teacher itself right about who an utterance was for 75% of the time (was 70%), missing 42% of requests (was 50%), false activations 3.9% (was 5.7%). |
 | H6 pretrained encoder | **supported** | log-mel 7%, gate features 6%, Parakeet 4 / 8 / 17 layers: 11 / 26 / 48% |
 
@@ -359,7 +359,7 @@ The experiments most likely to change the picture, roughly in order:
    intents involved.
 5. **Better pooling for slots** (attention pooling over frames instead of
    mean/std/max), or more timer data via `synth --mix`.
-6. **Speculative STT**: start transcribing in parallel when System One is
+6. **Speculative STT**: start transcribing in parallel when Reflex is
    unsure, and cancel it if the answer turns out to be *ignore*. This removes
    the escalation penalty in H4. It isn't implemented; the pipeline's
    docstring explains why head-start transcription was kept out of the

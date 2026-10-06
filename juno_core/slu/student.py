@@ -6,7 +6,7 @@ One shared hidden layer and one softmax head per question the schema asks:
     intent      every intent in the schema, open_request included
     slot heads  one per (intent, slot), over that slot's declared values
 
-It is trained by distillation: the targets are what System Two -- the
+It is trained by distillation: the targets are what the cascade -- the
 expensive cascade -- said about the same audio, as probabilities, not just
 its top answer. Where a gold label exists (a prompted recording, a scripted
 synthetic clip), training can mix it in; the training CLI says how much.

@@ -1,4 +1,4 @@
-"""A guided, consented session that teaches System One with real voices in a real room.
+"""A guided, consented session that teaches Reflex with real voices in a real room.
 
     python -m juno_core.slu collect --out data/slu/consented/s1 --speakers p1,p2 \\
         --room kitchen --consent release --encoder parakeet logmel

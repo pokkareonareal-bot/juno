@@ -10,7 +10,7 @@ Four kinds of line, chosen to make the problem honest rather than easy:
   assistant, typed     core commands (and the agent's own intents), said the
                        many ways people say them, with and without the name
   assistant, open      questions and requests whose content matters --
-                       System One must hand these on, not answer them
+                       Reflex must hand these on, not answer them
   human                remarks, plans and questions to other people,
                        including HARD NEGATIVES: lines that are word for word
                        a command ("stop it", "what time is it, Sam?",
@@ -160,7 +160,7 @@ FILL = {
 }
 
 # Durations on the typed list, and some off it -- a timer for 13 minutes is
-# still timer.set, just with a value System One must not claim to know.
+# still timer.set, just with a value Reflex must not claim to know.
 OFF_LIST_DURATIONS = (45, 150, 200, 660, 780, 1080, 1320, 3000, 4200, 10800)
 
 

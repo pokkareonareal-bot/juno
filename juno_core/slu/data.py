@@ -70,7 +70,7 @@ from juno_core.intelligence.gate_training import OPEN_LICENSES, read_wav
 
 RATE = 16000
 
-# Sources System One's training knows, beyond gate_training's registry.
+# Sources Reflex's training knows, beyond gate_training's registry.
 SLU_SOURCES = {
     "synthetic_say": {
         "name": "Scripted lines voiced by macOS `say`",

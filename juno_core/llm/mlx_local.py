@@ -6,7 +6,7 @@
 
 The weights download once from Hugging Face and are cached. Like Ollama, this
 makes a fully offline pipeline possible; unlike Ollama there is nothing to
-install or run beside Juno. It is also the model System One's teacher uses
+install or run beside Juno. It is also the model Reflex's teacher uses
 (juno_core/slu/judge.py), so the two share one download.
 
 MLX keeps its streams per thread, and the pipeline may call this from more

@@ -10,7 +10,7 @@ There are two seams. Use whichever fits your agent.
 
        on_accept(text: str, decision: IntentDecision, context) -> str | None
 
-2. TYPED -- the System One one. Your agent DECLARES what it can do (a schema
+2. TYPED -- the Reflex SLU one. Your agent DECLARES what it can do (a schema
    of intents with typed slots), and Juno calls
 
        on_decision(decision: Decision, context) -> str | None
@@ -22,17 +22,19 @@ There are two seams. Use whichever fits your agent.
         "intent": {"value": "lights.off", "p": 0.93}, "slots": {},
         "transcript": null}
 
-   ``source`` says how it was decided. "system_one" means from the audio
-   alone, with no transcription (``transcript`` is null); "system_two" means
-   speech-to-text ran and ``transcript`` holds the words. The shape is the
-   same either way, so your agent has one code path.
+   ``source`` says how it was decided. "system_one" means Reflex SLU decided
+   from the audio alone, with no transcription (``transcript`` is null);
+   "system_two" means the cascade ran speech-to-text and ``transcript`` holds
+   the words. Those spellings predate the rename: compare against
+   SOURCE_REFLEX and SOURCE_CASCADE (juno_core.slu.schema), not the literals.
+   The shape is the same either way, so your agent has one code path.
 
-   An agent's own intents are understood by System Two straight away (from
-   their examples, or by your language model if one is configured). System
-   One only knows the intents it was trained on, and an utterance it has no
+   An agent's own intents are understood by the cascade straight away (from
+   their examples, or by your language model if one is configured). Reflex
+   only knows the intents it was trained on, and an utterance it has no
    class for could land in the wrong one -- so given a schema with intents
    its model lacks, it switches itself off (and says why) until it is
-   retrained on the extended schema (README, "System One"). System Two keeps
+   retrained on the extended schema (README, "Reflex SLU"). The cascade keeps
    answering in your schema meanwhile.
 
 This example declares two intents of its own on top of the core ones, and
@@ -80,7 +82,7 @@ def my_agent(decision: Decision, context: ConversationContext, *, model) -> str 
     if intent == "lights.set":
         return f"Lights to {slots['level']}."
 
-    # Open-ended: there is a transcript (System Two ran). Ask the model.
+    # Open-ended: there is a transcript (the cascade ran). Ask the model.
     if decision.transcript:
         messages = [
             {"role": "system", "content": "You are a spoken voice assistant. Answer "
@@ -107,8 +109,8 @@ def main() -> None:
         config, stt=stt, model=model, observer=observer, schema=MY_SCHEMA,
         on_decision=lambda decision, context: my_agent(decision, context, model=model),
     )
-    if pipeline.system_one.error:
-        print(f"(System One off: {pipeline.system_one.error})")
+    if pipeline.reflex.error:
+        print(f"(Reflex off: {pipeline.reflex.error})")
 
     print("Connected an example agent with two intents of its own.")
     print('Try: "lights off", "set the lights to dim", "what time is it", or anything else.\n')

@@ -1,4 +1,4 @@
-"""Teaching System One, offline.
+"""Teaching Reflex SLU, offline.
 
     python -m juno_core.slu sources
     python -m juno_core.slu schema   --out my_schema.json           # start an agent schema
@@ -24,7 +24,7 @@
 THE PIPELINE
 ------------
 ``synth``/``import-*`` produce clips and a manifest with GOLD labels and
-provenance. ``label`` runs the TEACHER (System Two: speech-to-text, the intent
+provenance. ``label`` runs the TEACHER (the cascade: speech-to-text, the intent
 engine, the parser) over every clip and records its soft answer next to the
 gold one. ``embed`` runs an encoder over every clip and stores one pooled
 vector per clip -- several encoders can be embedded side by side, which is
@@ -257,7 +257,7 @@ def choose_thresholds(model: StudentModel, X: np.ndarray, rows: Sequence[dict], 
         if best is None or key > best[0]:
             best = (key, (ta, ti, ts), wrong, false_act, n_acts)
     if best is None:
-        info["act"] = "no threshold combination met the act budgets on select: System One will not act"
+        info["act"] = "no threshold combination met the act budgets on select: Reflex will not act"
         return Thresholds(ignore_below=ignore_below), info
     _, (ta, ti, ts), wrong, false_act, n_acts = best
     info["act_on_select"] = {"acts": n_acts, "wrong": wrong, "false_activations": false_act}
@@ -369,7 +369,7 @@ def evaluate(model: StudentModel, X: np.ndarray, rows: Sequence[dict], *,
                  if r["t_accept"] and r["g_addressed"] == ASSISTANT]),
         }
 
-    # End to end: System One where it decided, System Two (the teacher's recorded
+    # End to end: Reflex where it decided, the cascade (the teacher's recorded
     # verdict) where it escalated, against the teacher alone on every row.
     hybrid_ok, teacher_ok, stt_calls = [], [], 0
     for r_, row, t in zip(routed, rows, truths):
@@ -399,7 +399,7 @@ def evaluate(model: StudentModel, X: np.ndarray, rows: Sequence[dict], *,
             out["end_to_end"]["compute_ms_per_utterance"] = {
                 "teacher_only": round(mean_stt, 2),
                 "hybrid": round(mean_enc + mean_stt * stt_calls / len(hybrid_ok), 2),
-                "note": "teacher STT time as recorded at labelling; System One encode time as "
+                "note": "teacher STT time as recorded at labelling; Reflex encode time as "
                         "recorded at embedding. Text-side time is excluded from both.",
             }
 
@@ -760,9 +760,9 @@ def _cmd_train(args) -> int:
     fa = report["false_activation"]["rate"] or 0.0
     if fi > args.max_false_ignore or fa > args.max_false_activation:
         _log(f"\nholdout misses a budget (false ignore {fi:.2%}, false activation {fa:.2%}): "
-             f"keep system_one.mode at shadow and get more (and more real) data.")
+             f"keep reflex.mode at shadow and get more (and more real) data.")
         return 2
-    _log(f"\nwrote {args.out}. Run it with system_one.mode: shadow first.")
+    _log(f"\nwrote {args.out}. Run it with reflex.mode: shadow first.")
     return 0
 
 
@@ -938,7 +938,7 @@ def _judge_args(s) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m juno_core.slu",
-                                     description="Train and measure System One (audio -> typed decision).")
+                                     description="Train and measure Reflex (audio -> typed decision).")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("sources", help="registered data sources and whether models trained on them ship")
@@ -970,7 +970,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     s.add_argument("--out", required=True)
     s.add_argument("--per-word", type=int, default=120)
 
-    s = sub.add_parser("label", help="run the teacher (System Two) over clips")
+    s = sub.add_parser("label", help="run the teacher (the cascade) over clips")
     s.add_argument("--manifest", nargs="+", required=True)
     s.add_argument("--out", required=True)
     s.add_argument("--stt", default="parakeet-0.6b",
@@ -1088,26 +1088,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     s.add_argument("--scale", type=float, default=1.0)
     _judge_args(s)
 
-    s = sub.add_parser("studio", help="a local web page to try System One and collect data")
+    s = sub.add_parser("studio", help="a local web page to try Reflex and collect data")
     s.add_argument("--port", type=int, default=8765)
-    s.add_argument("--stt", default="parakeet-0.6b", help="System Two's recogniser")
+    s.add_argument("--stt", default="parakeet-0.6b", help="the cascade's recogniser")
     s.add_argument("--model", help="student to load (default: the newest in models/)")
     s.add_argument("--encoder", nargs="+", help="encoders to keep vectors from "
                                                "(default: parakeet logmel gate)")
     s.add_argument("--simulate", nargs="+", help="WAV files or folders to play instead of the mic")
-    s.add_argument("--judge", help="give System Two the language-model judge: mlx, mlx:<repo>, "
+    s.add_argument("--judge", help="give the cascade the language-model judge: mlx, mlx:<repo>, "
                                    "or an llm.provider")
     s.add_argument("--no-browser", action="store_true")
     s.add_argument("--config")
     s.add_argument("--aliases")
     s.add_argument("--name", default="Juno")
 
-    s = sub.add_parser("bench", help="live benchmark: System One vs always-transcribe baselines")
+    s = sub.add_parser("bench", help="live benchmark: Reflex vs always-transcribe baselines")
     from juno_core.slu.bench import add_bench_args
 
     add_bench_args(s)
 
-    s = sub.add_parser("shadow", help="compare System One with System Two in a shadow log")
+    s = sub.add_parser("shadow", help="compare Reflex with the cascade in a shadow log")
     s.add_argument("--log", required=True)
 
     args = parser.parse_args(argv)

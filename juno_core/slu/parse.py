@@ -1,4 +1,4 @@
-"""Filling the schema from WORDS: System Two's half of the typed answer.
+"""Filling the schema from WORDS: the cascade's half of the typed answer.
 
 Once speech-to-text has run, the intent engine already says whether the
 utterance was for the assistant. This says WHAT it was, in the agent's
